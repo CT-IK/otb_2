@@ -152,26 +152,31 @@ async def create_list(message: Message):
             sh = gc.open_by_url(faculty.google_sheet_url)
             # Имя листа
             sheet_name = f"{user.first_name}_{user.last_name}"
-            # Проверяем, есть ли уже такой лист
             if sheet_name in [ws.title for ws in sh.worksheets()]:
                 await message.answer("Лист с таким именем уже существует!")
                 return
             worksheet = sh.add_worksheet(title=sheet_name, rows="20", cols="10")
             # Заполняем даты по горизонтали (B1:H1)
             dates = ["26.09(пт)", "27.09(cб)", "28.09(вск)", "29.09(пн)", "30.09(вт)", "01.10(ср)", "02.10(чт)", "03.10(пт)"]
-            worksheet.update('B1', [dates])
+            worksheet.update([dates], "B1")
             # Заполняем интервалы по вертикали (A2:A13)
             times = [
                 "10:00 - 11:00", "11:00 - 12:00", "12:00 - 13:00", "13:00 - 14:00", "14:00 - 15:00", "15:00 - 16:00",
                 "16:00 - 17:00", "17:00 - 18:00", "18:00 - 19:00", "19:00 - 20:00", "20:00 - 21:00", "21:00 - 22:00"
             ]
             for i, t in enumerate(times, start=2):
-                worksheet.update(f"A{i}", [[t]])
+                worksheet.update([[t]], f"A{i}")
             # Добавляем dropdown в B2:H13
             rule = {
-                "conditionType": "ONE_OF_LIST",
-                "conditionValues": [{"userEnteredValue": "могу"}, {"userEnteredValue": "не могу"}],
-                "showCustomUi": True
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [
+                        {"userEnteredValue": "могу"},
+                        {"userEnteredValue": "не могу"}
+                    ]
+                },
+                "showCustomUi": True,
+                "strict": True
             }
             requests = []
             for row in range(2, 14):
@@ -189,13 +194,13 @@ async def create_list(message: Message):
                         }
                     })
             sh.batch_update({"requests": requests})
-            # В A15 пишем id пользователя
-            worksheet.update("A15", str(user.id))
+            worksheet.update([[str(user.id)]], "A15")
             await message.answer(f"Лист {sheet_name} успешно создан!")
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        await message.answer(f"Ошибка при создании листа:\n<pre>{e}\n{tb[-1500:]}</pre>")
+        short_tb = tb[-500:] if len(tb) > 500 else tb
+        await message.answer(f"Ошибка при создании листа:\n<pre>{e}\n{short_tb}</pre>")
 
 async def main():
 	await dp.start_polling(bot)
