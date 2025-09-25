@@ -9,7 +9,8 @@ from aiogram import F
 import asyncio
 from db.engine import get_session
 from db.models import User, Faculty, Candidate
-from sqlalchemy import select, insert
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 import gspread
 import traceback
