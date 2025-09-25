@@ -266,6 +266,7 @@ async def create_lists(message: Message):
                 sh.batch_update({"requests": requests})
                 worksheet.update([[str(user.id)]], "A15")
                 created += 1
+                await asyncio.sleep(1)
             await message.answer(f"Создано листов: {created}")
     except Exception as e:
         import traceback
