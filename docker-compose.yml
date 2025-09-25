@@ -11,6 +11,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   pgadmin:
     image: dpage/pgadmin4:8.12
     environment:

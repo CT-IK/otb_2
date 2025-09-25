@@ -14,12 +14,21 @@ from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 import gspread
 import traceback
+import aioredis
 
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+redis = None
+
+async def get_redis():
+    global redis
+    if redis is None:
+        redis = await aioredis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
+    return redis
 
 @dp.message(Command("role"))
 async def get_role(message: Message):
@@ -370,14 +379,15 @@ async def create_slots(message: Message):
         if not date_counts:
             await message.answer("Нет доступных дат для записи.")
             return
-        # Получаем количество слотов, которые уже добавлены (заглушка, нужна отдельная таблица для слотов)
-        # Пока просто показываем количество отметок 'могу' на каждую дату
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            *[[InlineKeyboardButton(text=f"{date} ({count})", callback_data=f"slot_date:{date}")] for date, count in date_counts],
+            *[[InlineKeyboardButton(text=f"{date}", callback_data=f"slot_date:{date}")] for date, _ in date_counts],
             [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
         ])
-        text = "Выберите дату для создания слотов. В скобках — количество доступных отметок 'могу'."
-        await message.answer(text, reply_markup=kb)
+        text = "<b>Выберите дату для создания слотов.</b>\n\n"
+        text += "Доступные даты и количество отметок 'могу':\n"
+        for date, count in date_counts:
+            text += f"• {date} — <b>{count}</b>\n"
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("slot_date:"))
 async def slot_date_callback(callback: CallbackQuery):
@@ -399,15 +409,25 @@ async def slot_date_callback(callback: CallbackQuery):
                 Availability.is_available == True
             ).group_by(Availability.time_slot)
         )
-        time_counts = result_times.all()
+        time_counts = dict(result_times.all())
+        # Получаем лимиты слотов для каждого времени
+        result_limits = await session.execute(
+            select(SlotLimit.time_slot, SlotLimit.limit).where(
+                SlotLimit.faculty_id == faculty.id,
+                SlotLimit.date == date
+            )
+        )
+        slot_limits = dict(result_limits.all())
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            *[[InlineKeyboardButton(text=f"{time_slot} ({count})", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot, count in time_counts],
+            *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in time_counts.keys()],
             [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
         ])
-        text = f"Доступно слотов на {date}:\n"
-        for time_slot, count in time_counts:
-            text += f"{time_slot} - {count}\n"
-        await callback.message.edit_text(text, reply_markup=kb)
+        text = f"<b>Доступно слотов на {date}:</b>\n\n"
+        for time_slot in time_counts.keys():
+            limit = slot_limits.get(time_slot, 0)
+            text += f"• {time_slot} — <b>{limit}</b> слотов\n"
+        text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("slot_time:"))
 async def slot_time_callback(callback: CallbackQuery):
@@ -449,7 +469,7 @@ async def slot_time_callback(callback: CallbackQuery):
             f"<b>{date} — {time_slot}</b>\n\n"
             f"<b>Доступные люди:</b>\n{user_list}\n\n"
             f"<b>Максимальное количество слотов для записи:</b> <b>{current_slots}</b>\n\n"
-            f"Чтобы изменить лимит, используйте команду /set_slot_limit {date} {time_slot} <число>"
+            f"Чтобы изменить лимит, используйте команду /set_slot_limit {date} {time_slot} число"
         )
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
