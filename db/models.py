@@ -27,7 +27,7 @@ class Faculty(Base):
     google_sheet_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     admin_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
-    admin: "User" = relationship("User", foreign_keys=[admin_id], backref="admin_faculties")
+    admin: Mapped["User"] = relationship("User", foreign_keys=[admin_id], backref="admin_faculties")
 
 
 class User(Base):
