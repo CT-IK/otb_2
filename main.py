@@ -310,22 +310,21 @@ async def parse_availability(message: Message):
             added = 0
             for ws in sheets:
                 try:
-                    # user_id хранится в A15
                     user_id_cell = ws.acell("A15").value
                     if not user_id_cell:
                         continue
                     user_id = int(user_id_cell)
-                    # Даты в B1:H1
-                    dates = ws.range("B1:H1")
-                    date_values = [cell.value for cell in dates]
-                    # Временные интервалы в A2:A13
-                    times = ws.range("A2:A13")
-                    time_values = [cell.value for cell in times]
-                    # Парсим B2:H13
-                    grid = ws.range("B2:H13")
+                    # Даты в B1:I1 (8 столбцов)
+                    date_cells = ws.range("B1:I1")
+                    date_values = [cell.value for cell in date_cells]
+                    # Временные интервалы в A2:A13 (12 строк)
+                    time_cells = ws.range("A2:A13")
+                    time_values = [cell.value for cell in time_cells]
+                    # Парсим диапазон B2:I13 (12 строк x 8 столбцов)
+                    grid = ws.range("B2:I13")
                     for i, cell in enumerate(grid):
-                        row = i // 8  # 8 столбцов
-                        col = i % 8
+                        row = i // 8  # 0..11
+                        col = i % 8   # 0..7
                         value = cell.value.strip().lower()
                         if value == "могу":
                             date = date_values[col]
