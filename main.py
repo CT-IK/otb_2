@@ -394,28 +394,21 @@ async def slot_date_callback(callback: CallbackQuery):
     date = callback.data.split(":", 1)[1]
     tg_id = str(callback.from_user.id)
     async for session in get_session():
-        # Получаем faculty_id по tg_id
+        # Проверяем, что пользователь — админ факультета
         result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
         row = result.first()
         if not row:
             await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
-        faculty_id = faculty.id
-        redis = await get_redis()
-        cache_key = f"slot_limits:{tg_id}:{date}"
-        cached = await redis.get(cache_key)
-        if cached:
-            slot_limits = eval(cached)
-        else:
-            result_limits = await session.execute(
-                select(SlotLimit.time_slot, SlotLimit.limit).where(
-                    SlotLimit.faculty_id == faculty_id,
-                    SlotLimit.date == date
-                )
+        # Получаем все интервалы времени для выбранной даты
+        result_limits = await session.execute(
+            select(SlotLimit.time_slot, SlotLimit.limit).where(
+                SlotLimit.faculty_id == faculty.id,
+                SlotLimit.date == date
             )
-            slot_limits = dict(result_limits.all())
-            await redis.set(cache_key, str(slot_limits), ex=60)
+        )
+        slot_limits = dict(result_limits.all())
         kb = InlineKeyboardMarkup(inline_keyboard=[
             *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in slot_limits.keys()],
             [InlineKeyboardButton(text="Назад", callback_data="create_slots")]
