@@ -1,10 +1,10 @@
 """add unique constraint to slot_limits
 
-Revision ID: add_unique_slot_limits_faculty_date_time
+Revision ID: a1b2c3d4e5f6
 Revises: add_slot_limits_2025
 Create Date: 2025-09-26
 """
-revision = 'add_unique_slot_limits_faculty_date_time'
+revision = 'a1b2c3d4e5f6'
 down_revision = 'add_slot_limits_2025'
 branch_labels = None
 depends_on = None
