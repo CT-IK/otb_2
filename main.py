@@ -372,10 +372,10 @@ async def create_slots(message: Message):
             return
         # Получаем количество слотов, которые уже добавлены (заглушка, нужна отдельная таблица для слотов)
         # Пока просто показываем количество отметок 'могу' на каждую дату
-        kb = InlineKeyboardMarkup()
-        for date, count in date_counts:
-            kb.add(InlineKeyboardButton(text=f"{date} ({count})", callback_data=f"slot_date:{date}"))
-        kb.add(InlineKeyboardButton(text="Назад", callback_data="slot_back"))
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=f"{date} ({count})", callback_data=f"slot_date:{date}")] for date, count in date_counts],
+            [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
+        ])
         text = "Выберите дату для создания слотов. В скобках — количество доступных отметок 'могу'."
         await message.answer(text, reply_markup=kb)
 
@@ -400,10 +400,10 @@ async def slot_date_callback(callback: CallbackQuery):
             ).group_by(Availability.time_slot)
         )
         time_counts = result_times.all()
-        kb = InlineKeyboardMarkup()
-        for time_slot, count in time_counts:
-            kb.add(InlineKeyboardButton(text=f"{time_slot} ({count})", callback_data=f"slot_time:{date}:{time_slot}"))
-        kb.add(InlineKeyboardButton(text="Назад", callback_data="slot_back"))
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=f"{time_slot} ({count})", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot, count in time_counts],
+            [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
+        ])
         text = f"Доступно слотов на {date}:\n"
         for time_slot, count in time_counts:
             text += f"{time_slot} - {count}\n"
@@ -435,10 +435,10 @@ async def slot_time_callback(callback: CallbackQuery):
         # Получаем текущее количество слотов (заглушка, нужна отдельная таблица для хранения лимита)
         # Пока просто выводим 0
         current_slots = 0
-        kb = InlineKeyboardMarkup()
-        for i in range(0, 11):
-            kb.add(InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}"))
-        kb.add(InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}"))
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
+            [InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}")]
+        ])
         text = f"{date} — {time_slot}\n\nДоступные люди:\n{user_list}\n\nВыберите максимальное количество слотов для записи на это время: (текущее: {current_slots})"
         await callback.message.edit_text(text, reply_markup=kb)
 
@@ -467,8 +467,9 @@ async def slot_count_callback(callback: CallbackQuery):
         )
         await session.execute(stmt)
         await session.commit()
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}"))
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+        ])
         await callback.message.edit_text(f"Лимит слотов на {date} {time_slot} установлен: {count}", reply_markup=kb)
 
 async def main():
