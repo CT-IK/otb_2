@@ -8,9 +8,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User, Faculty
-from sqlalchemy import select
+from db.models import User, Faculty, Candidate
+from sqlalchemy import select, insert
 from dotenv import load_dotenv
+import gspread
+import traceback
 
 load_dotenv()
 
@@ -47,6 +49,79 @@ async def get_role(message: Message):
 		if not roles:
 			roles.append("Пользователь без роли")
 		await message.answer(f"Ваша роль: {', '.join(roles)}{faculty_info}")
+
+@dp.message(Command("set_people"))
+async def set_people(message: Message):
+    tg_id = str(message.from_user.id)
+    await message.answer("Начинаю загрузку данных. Это может занять несколько минут...")
+    try:
+        async for session in get_session():
+            # Проверяем, что пользователь — админ факультета
+            result_user = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+            row = result_user.first()
+            if not row:
+                await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+                return
+            user, faculty = row
+            if not faculty.google_sheet_url:
+                await message.answer("У факультета не указана ссылка на Google-таблицу.")
+                return
+            # Авторизация gspread
+            gc = gspread.service_account(filename="credentials.json")
+            sh = gc.open_by_url(faculty.google_sheet_url)
+            # Парсим кандидатов
+            ws_candidates = sh.worksheet("Кандидаты")
+            candidates = ws_candidates.get_all_values()[1:]  # пропускаем заголовок
+            added_candidates = 0
+            for row in candidates:
+                if not row or not row[0] or not row[1] or not row[2]:
+                    break
+                first_name, last_name, vk_id = row[0], row[1], row[2]
+                stmt = insert(Candidate).values(
+                    first_name=first_name,
+                    last_name=last_name,
+                    vk_id=vk_id,
+                    faculty_id=faculty.id
+                ).on_conflict_do_nothing(index_elements=[Candidate.vk_id])
+                await session.execute(stmt)
+                added_candidates += 1
+            # Парсим опытных собесеров
+            ws_exp = sh.worksheet("Опытные собесеры")
+            exp_rows = ws_exp.get_all_values()[1:]
+            added_exp = 0
+            for row in exp_rows:
+                if not row or not row[2] or not row[3]:
+                    break
+                first_name, last_name = row[2], row[3]
+                stmt = insert(User).values(
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_sobeser=True,
+                    faculty_id=faculty.id
+                ).on_conflict_do_nothing(index_elements=[User.first_name, User.last_name, User.faculty_id])
+                await session.execute(stmt)
+                added_exp += 1
+            # Парсим не опытных собесеров
+            ws_noexp = sh.worksheet("Не опытные собесеры")
+            noexp_rows = ws_noexp.get_all_values()[1:]
+            added_noexp = 0
+            for row in noexp_rows:
+                if not row or not row[2] or not row[3]:
+                    break
+                first_name, last_name = row[2], row[3]
+                stmt = insert(User).values(
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_sobeser=True,
+                    faculty_id=faculty.id
+                ).on_conflict_do_nothing(index_elements=[User.first_name, User.last_name, User.faculty_id])
+                await session.execute(stmt)
+                added_noexp += 1
+            await session.commit()
+            await message.answer(f"Добавлено кандидатов: {added_candidates}\nОпытных собесеров: {added_exp}\nНе опытных собесеров: {added_noexp}")
+    except Exception as e:
+        tb = traceback.format_exc()
+        await message.answer(f"Произошла ошибка при загрузке данных:\n<code>{e}</code>\n<code>{tb[-1500:]}</code>")
 
 async def main():
 	await dp.start_polling(bot)
