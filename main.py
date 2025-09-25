@@ -443,12 +443,14 @@ async def slot_time_callback(callback: CallbackQuery):
     _, date, time_slot = callback.data.split(":", 2)
     tg_id = str(callback.from_user.id)
     async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
         result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
         row = result.first()
         if not row:
             await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
+        # Получаем всех пользователей, которые могут в это время и день
         result_users = await session.execute(
             select(User).join(Availability, Availability.user_id == User.id).where(
                 Availability.faculty_id == faculty.id,
@@ -469,13 +471,14 @@ async def slot_time_callback(callback: CallbackQuery):
         slot_limit = result_limit.scalar()
         current_slots = slot_limit if slot_limit is not None else 0
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}")]
         ])
         text = (
             f"<b>{date} — {time_slot}</b>\n\n"
             f"<b>Доступные люди:</b>\n{user_list}\n\n"
             f"<b>Максимальное количество слотов для записи:</b> <b>{current_slots}</b>\n\n"
-            f"Чтобы изменить лимит, используйте команду /set_slot_limit {date} {time_slot} число"
+            f"Выберите лимит с помощью кнопок ниже."
         )
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
