@@ -24,14 +24,15 @@ services:
       - pgadmin_data:/var/lib/pgadmin
 
   bot:
-    build: ./bot
+    build: .
     env_file:
       - .env
     depends_on:
       - postgres
     restart: unless-stopped
     volumes:
-      - ./bot/credentials.json:/app/bot/credentials.json:ro
+      - ./credentials.json:/app/credentials.json:ro
+    command: python main.py
 
 volumes:
   pgdata:
