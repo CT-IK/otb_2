@@ -99,7 +99,7 @@ async def set_people(message: Message):
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
-                ).on_conflict_do_nothing(index_elements=[User.first_name, User.last_name, User.faculty_id])
+                )
                 await session.execute(stmt)
                 added_exp += 1
             # Парсим не опытных собесеров
@@ -115,14 +115,14 @@ async def set_people(message: Message):
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
-                ).on_conflict_do_nothing(index_elements=[User.first_name, User.last_name, User.faculty_id])
+                )
                 await session.execute(stmt)
                 added_noexp += 1
             await session.commit()
             await message.answer(f"Добавлено кандидатов: {added_candidates}\nОпытных собесеров: {added_exp}\nНе опытных собесеров: {added_noexp}")
     except Exception as e:
         tb = traceback.format_exc()
-        await message.answer(f"Произошла ошибка при загрузке данных:\n<code>{e}</code>\n<code>{tb[-1500:]}</code>")
+        await message.answer(f"Произошла ошибка при загрузке данных:\n{e}\n{tb[-1500:]}")
 
 async def main():
 	await dp.start_polling(bot)
