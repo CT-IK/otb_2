@@ -8,7 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User
+from db.models import User, Faculty
 from sqlalchemy import select
 from dotenv import load_dotenv
 
@@ -31,10 +31,11 @@ async def get_role(message: Message):
 		faculty_info = ""
 		if user.is_admin_faculty:
 			roles.append("Админ факультета")
-			# Получаем факультет, где этот пользователь админ
-			faculty = None
-			if hasattr(user, "admin_faculties") and user.admin_faculties:
-				faculty = user.admin_faculties[0]
+			# Асинхронно получаем факультет, где этот пользователь админ
+			result_faculty = await session.execute(
+				select(Faculty).where(Faculty.admin_id == user.id)
+			)
+			faculty = result_faculty.scalar_one_or_none()
 			if faculty:
 				faculty_info = f"\nФакультет: <b>{faculty.name}</b>"
 				if faculty.google_sheet_url:
