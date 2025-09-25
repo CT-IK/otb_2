@@ -8,7 +8,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User, Faculty, Candidate
+from db.models import User, Faculty, Candidate, Availability
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
@@ -286,6 +286,68 @@ async def create_lists(message: Message):
         tb = traceback.format_exc()
         short_tb = tb[-500:] if len(tb) > 500 else tb
         await message.answer(f"Ошибка при создании листов:\n<pre>{e}\n{short_tb}</pre>")
+
+@dp.message(Command("parse_availability"))
+async def parse_availability(message: Message):
+    tg_id = str(message.from_user.id)
+    await message.answer("Начинаю парсинг доступности всех собеседующих...")
+    try:
+        async for session in get_session():
+            # Получаем админа и факультет
+            result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+            row = result.first()
+            if not row:
+                await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+                return
+            admin, faculty = row
+            if not faculty.google_sheet_url:
+                await message.answer("У факультета не указана ссылка на Google-таблицу.")
+                return
+            gc = gspread.service_account(filename="credentials.json")
+            sh = gc.open_by_url(faculty.google_sheet_url)
+            exclude = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры"}
+            sheets = [ws for ws in sh.worksheets() if ws.title not in exclude]
+            added = 0
+            for ws in sheets:
+                try:
+                    # user_id хранится в A15
+                    user_id_cell = ws.acell("A15").value
+                    if not user_id_cell:
+                        continue
+                    user_id = int(user_id_cell)
+                    # Даты в B1:H1
+                    dates = ws.range("B1:H1")
+                    date_values = [cell.value for cell in dates]
+                    # Временные интервалы в A2:A13
+                    times = ws.range("A2:A13")
+                    time_values = [cell.value for cell in times]
+                    # Парсим B2:H13
+                    grid = ws.range("B2:H13")
+                    for i, cell in enumerate(grid):
+                        row = i // 8  # 8 столбцов
+                        col = i % 8
+                        value = cell.value.strip().lower()
+                        if value == "могу":
+                            date = date_values[col]
+                            time_slot = time_values[row]
+                            stmt = insert(Availability).values(
+                                user_id=user_id,
+                                faculty_id=faculty.id,
+                                date=date,
+                                time_slot=time_slot,
+                                is_available=True
+                            ).on_conflict_do_nothing()
+                            await session.execute(stmt)
+                            added += 1
+                except Exception:
+                    continue
+            await session.commit()
+            await message.answer(f"Добавлено доступных слотов: {added}")
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        short_tb = tb[-500:] if len(tb) > 500 else tb
+        await message.answer(f"Ошибка при парсинге:<pre>{e}\n{short_tb}</pre>")
 
 async def main():
 	await dp.start_polling(bot)

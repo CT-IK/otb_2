@@ -50,4 +50,15 @@ class Slot(Base):
     start_time: Mapped[Time] = mapped_column(Time, nullable=False)
     end_time: Mapped[Time] = mapped_column(Time, nullable=False)
 
+# Таблица доступности собеседующих по временным слотам
+class Availability(Base):
+    __tablename__ = "availability"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    faculty_id: Mapped[int] = mapped_column(ForeignKey("faculties.id"), nullable=False)
+    date: Mapped[str] = mapped_column(String(20), nullable=False)  # формат: DD.MM(день)
+    time_slot: Mapped[str] = mapped_column(String(20), nullable=False)  # например, "10:00 - 11:00"
+    is_available: Mapped[bool] = mapped_column(Boolean, default=True)
+
     
