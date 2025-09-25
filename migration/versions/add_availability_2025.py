@@ -1,4 +1,14 @@
-"""add availability table\n\nRevision ID: add_availability_2025\nRevises: 037e1296f152\nCreate Date: 2025-09-25\n"""
+"""add availability table
+
+Revision ID: add_availability_2025
+Revises: 037e1296f152
+Create Date: 2025-09-25
+"""
+
+revision = 'add_availability_2025'
+down_revision = '037e1296f152'
+branch_labels = None
+depends_on = None
 from alembic import op
 import sqlalchemy as sa
 
