@@ -415,7 +415,7 @@ async def slot_date_callback(callback: CallbackQuery):
             ).distinct()
         )
         time_slots = [r[0] for r in result_times.all()]
-        # Получаем лимиты слотов для каждого времени
+        # Получаем лимиты слотов для каждого времени (по умолчанию 0)
         result_limits = await session.execute(
             select(SlotLimit.time_slot, SlotLimit.limit).where(
                 SlotLimit.faculty_id == faculty.id,
@@ -427,11 +427,11 @@ async def slot_date_callback(callback: CallbackQuery):
             *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in time_slots],
             [InlineKeyboardButton(text="Назад", callback_data="create_slots")]
         ])
-        text = f"<b>Доступно слотов на {date}:</b>\n\n"
+        text = f"<b>Выберите время для даты {date}.</b>\n\n"
+        text += "Временные интервалы и количество сделанных слотов (по умолчанию 0):\n"
         for time_slot in time_slots:
             limit = slot_limits.get(time_slot, 0)
             text += f"• {time_slot} — <b>{limit}</b> слотов\n"
-        text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data == "create_slots")
