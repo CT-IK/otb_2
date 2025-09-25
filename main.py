@@ -28,15 +28,24 @@ async def get_role(message: Message):
 			await message.answer("Вы не найдены в базе данных.")
 			return
 		roles = []
+		faculty_info = ""
 		if user.is_admin_faculty:
 			roles.append("Админ факультета")
+			# Получаем факультет, где этот пользователь админ
+			faculty = None
+			if hasattr(user, "admin_faculties") and user.admin_faculties:
+				faculty = user.admin_faculties[0]
+			if faculty:
+				faculty_info = f"\nФакультет: <b>{faculty.name}</b>"
+				if faculty.google_sheet_url:
+					faculty_info += f"\nGoogle-таблица: {faculty.google_sheet_url}"
 		if user.is_sobeser:
 			roles.append("Собеседующий")
 		if user.is_candidate:
 			roles.append("Кандидат")
 		if not roles:
 			roles.append("Пользователь без роли")
-		await message.answer(f"Ваша роль: {', '.join(roles)}")
+		await message.answer(f"Ваша роль: {', '.join(roles)}{faculty_info}")
 
 async def main():
 	await dp.start_polling(bot)
