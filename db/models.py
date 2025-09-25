@@ -57,8 +57,19 @@ class Availability(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     faculty_id: Mapped[int] = mapped_column(ForeignKey("faculties.id"), nullable=False)
+
     date: Mapped[str] = mapped_column(String(20), nullable=False)  # формат: DD.MM(день)
     time_slot: Mapped[str] = mapped_column(String(20), nullable=False)  # например, "10:00 - 11:00"
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
+
+# Таблица лимитов слотов на дату и время
+class SlotLimit(Base):
+    __tablename__ = "slot_limits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    faculty_id: Mapped[int] = mapped_column(ForeignKey("faculties.id"), nullable=False)
+    date: Mapped[str] = mapped_column(String(20), nullable=False)
+    time_slot: Mapped[str] = mapped_column(String(20), nullable=False)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     

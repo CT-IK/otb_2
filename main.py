@@ -2,13 +2,13 @@
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User, Faculty, Candidate, Availability
+from db.models import User, Faculty, Candidate, Availability, SlotLimit
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
@@ -347,6 +347,129 @@ async def parse_availability(message: Message):
         tb = traceback.format_exc()
         short_tb = tb[-500:] if len(tb) > 500 else tb
         await message.answer(f"Ошибка при парсинге:<pre>{e}\n{short_tb}</pre>")
+
+@dp.message(Command("create_slots"))
+async def create_slots(message: Message):
+    tg_id = str(message.from_user.id)
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Получаем даты, где есть хотя бы один 'могу'
+        result_dates = await session.execute(
+            select(Availability.date, func.count()).where(
+                Availability.faculty_id == faculty.id,
+                Availability.is_available == True
+            ).group_by(Availability.date)
+        )
+        date_counts = result_dates.all()
+        if not date_counts:
+            await message.answer("Нет доступных дат для записи.")
+            return
+        # Получаем количество слотов, которые уже добавлены (заглушка, нужна отдельная таблица для слотов)
+        # Пока просто показываем количество отметок 'могу' на каждую дату
+        kb = InlineKeyboardMarkup()
+        for date, count in date_counts:
+            kb.add(InlineKeyboardButton(text=f"{date} ({count})", callback_data=f"slot_date:{date}"))
+        kb.add(InlineKeyboardButton(text="Назад", callback_data="slot_back"))
+        text = "Выберите дату для создания слотов. В скобках — количество доступных отметок 'могу'."
+        await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("slot_date:"))
+async def slot_date_callback(callback: CallbackQuery):
+    date = callback.data.split(":", 1)[1]
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Получаем все интервалы времени для выбранной даты
+        result_times = await session.execute(
+            select(Availability.time_slot, func.count()).where(
+                Availability.faculty_id == faculty.id,
+                Availability.date == date,
+                Availability.is_available == True
+            ).group_by(Availability.time_slot)
+        )
+        time_counts = result_times.all()
+        kb = InlineKeyboardMarkup()
+        for time_slot, count in time_counts:
+            kb.add(InlineKeyboardButton(text=f"{time_slot} ({count})", callback_data=f"slot_time:{date}:{time_slot}"))
+        kb.add(InlineKeyboardButton(text="Назад", callback_data="slot_back"))
+        text = f"Доступно слотов на {date}:\n"
+        for time_slot, count in time_counts:
+            text += f"{time_slot} - {count}\n"
+        await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("slot_time:"))
+async def slot_time_callback(callback: CallbackQuery):
+    _, date, time_slot = callback.data.split(":", 2)
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Получаем всех пользователей, которые могут в это время и день
+        result_users = await session.execute(
+            select(User).join(Availability, Availability.user_id == User.id).where(
+                Availability.faculty_id == faculty.id,
+                Availability.date == date,
+                Availability.time_slot == time_slot,
+                Availability.is_available == True
+            )
+        )
+        users = result_users.scalars().all()
+        user_list = "\n".join([f"{u.first_name} {u.last_name}" for u in users]) or "Нет доступных людей"
+        # Получаем текущее количество слотов (заглушка, нужна отдельная таблица для хранения лимита)
+        # Пока просто выводим 0
+        current_slots = 0
+        kb = InlineKeyboardMarkup()
+        for i in range(0, 11):
+            kb.add(InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}"))
+        kb.add(InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}"))
+        text = f"{date} — {time_slot}\n\nДоступные люди:\n{user_list}\n\nВыберите максимальное количество слотов для записи на это время: (текущее: {current_slots})"
+        await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("slot_count:"))
+async def slot_count_callback(callback: CallbackQuery):
+    _, date, time_slot, count = callback.data.split(":", 3)
+    count = int(count)
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Сохраняем/обновляем лимит слотов
+        stmt = insert(SlotLimit).values(
+            faculty_id=faculty.id,
+            date=date,
+            time_slot=time_slot,
+            limit=count
+        ).on_conflict_do_update(
+            index_elements=[SlotLimit.faculty_id, SlotLimit.date, SlotLimit.time_slot],
+            set_={"limit": count}
+        )
+        await session.execute(stmt)
+        await session.commit()
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}"))
+        await callback.message.edit_text(f"Лимит слотов на {date} {time_slot} установлен: {count}", reply_markup=kb)
 
 async def main():
 	await dp.start_polling(bot)
