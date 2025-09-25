@@ -166,7 +166,7 @@ async def create_list(message: Message):
                 "16:00 - 17:00", "17:00 - 18:00", "18:00 - 19:00", "19:00 - 20:00", "20:00 - 21:00", "21:00 - 22:00"
             ]
             for i, t in enumerate(times, start=2):
-                worksheet.update(f"A{i}", t)
+                worksheet.update(f"A{i}", [[t]])
             # Добавляем dropdown в B2:H13
             rule = {
                 "conditionType": "ONE_OF_LIST",
