@@ -1,0 +1,39 @@
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: zapis
+      POSTGRES_USER: zapis_user
+      POSTGRES_PASSWORD: zapis_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4:8.12
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - postgres
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  bot:
+    build: ./bot
+    env_file:
+      - ./bot/.env
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    volumes:
+      - ./bot/credentials.json:/app/bot/credentials.json:ro
+
+volumes:
+  pgdata:
+  pgadmin_data:
+
