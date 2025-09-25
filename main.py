@@ -202,6 +202,77 @@ async def create_list(message: Message):
         short_tb = tb[-500:] if len(tb) > 500 else tb
         await message.answer(f"Ошибка при создании листа:\n<pre>{e}\n{short_tb}</pre>")
 
+@dp.message(Command("create_lists"))
+async def create_lists(message: Message):
+    tg_id = str(message.from_user.id)
+    await message.answer("Создаю листы для всех собеседующих факультета...")
+    try:
+        async for session in get_session():
+            # Получаем админа и факультет
+            result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+            row = result.first()
+            if not row:
+                await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+                return
+            admin, faculty = row
+            if not faculty.google_sheet_url:
+                await message.answer("У факультета не указана ссылка на Google-таблицу.")
+                return
+            gc = gspread.service_account(filename="credentials.json")
+            sh = gc.open_by_url(faculty.google_sheet_url)
+            # Получаем всех собеседующих этого факультета
+            result_sobesers = await session.execute(select(User).where(User.is_sobeser == True, User.faculty_id == faculty.id))
+            sobesers = result_sobesers.scalars().all()
+            dates = ["26.09(пт)", "27.09(cб)", "28.09(вск)", "29.09(пн)", "30.09(вт)", "01.10(ср)", "02.10(чт)", "03.10(пт)"]
+            times = [
+                "10:00 - 11:00", "11:00 - 12:00", "12:00 - 13:00", "13:00 - 14:00", "14:00 - 15:00", "15:00 - 16:00",
+                "16:00 - 17:00", "17:00 - 18:00", "18:00 - 19:00", "19:00 - 20:00", "20:00 - 21:00", "21:00 - 22:00"
+            ]
+            rule = {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [
+                        {"userEnteredValue": "могу"},
+                        {"userEnteredValue": "не могу"}
+                    ]
+                },
+                "showCustomUi": True,
+                "strict": True
+            }
+            created = 0
+            for user in sobesers:
+                sheet_name = f"{user.first_name}_{user.last_name}"
+                if sheet_name in [ws.title for ws in sh.worksheets()]:
+                    continue
+                worksheet = sh.add_worksheet(title=sheet_name, rows="20", cols="10")
+                worksheet.update([dates], "B1")
+                for i, t in enumerate(times, start=2):
+                    worksheet.update([[t]], f"A{i}")
+                requests = []
+                for row in range(2, 14):
+                    for col in range(2, 10):
+                        requests.append({
+                            "setDataValidation": {
+                                "range": {
+                                    "sheetId": worksheet._properties["sheetId"],
+                                    "startRowIndex": row-1,
+                                    "endRowIndex": row,
+                                    "startColumnIndex": col-1,
+                                    "endColumnIndex": col
+                                },
+                                "rule": rule
+                            }
+                        })
+                sh.batch_update({"requests": requests})
+                worksheet.update([[str(user.id)]], "A15")
+                created += 1
+            await message.answer(f"Создано листов: {created}")
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        short_tb = tb[-500:] if len(tb) > 500 else tb
+        await message.answer(f"Ошибка при создании листов:\n<pre>{e}\n{short_tb}</pre>")
+
 async def main():
 	await dp.start_polling(bot)
 
