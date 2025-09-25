@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 import gspread
 import traceback
-import aioredis
+import redis.asyncio as redis
 
 load_dotenv()
 
@@ -22,13 +22,13 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-redis = None
+redis_client = None
 
 async def get_redis():
-    global redis
-    if redis is None:
-        redis = await aioredis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
-    return redis
+    global redis_client
+    if redis_client is None:
+        redis_client = redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
+    return redis_client
 
 @dp.message(Command("role"))
 async def get_role(message: Message):
