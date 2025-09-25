@@ -393,30 +393,38 @@ async def create_slots(message: Message):
 async def slot_date_callback(callback: CallbackQuery):
     date = callback.data.split(":", 1)[1]
     tg_id = str(callback.from_user.id)
-    redis = await get_redis()
-    cache_key = f"slot_limits:{tg_id}:{date}"
-    cached = await redis.get(cache_key)
-    if cached:
-        slot_limits = eval(cached)
-    else:
-        async for session in get_session():
+    async for session in get_session():
+        # Получаем faculty_id по tg_id
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        faculty_id = faculty.id
+        redis = await get_redis()
+        cache_key = f"slot_limits:{tg_id}:{date}"
+        cached = await redis.get(cache_key)
+        if cached:
+            slot_limits = eval(cached)
+        else:
             result_limits = await session.execute(
                 select(SlotLimit.time_slot, SlotLimit.limit).where(
-                    SlotLimit.faculty_id == (await session.execute(select(Faculty.id).join(User, Faculty.admin_id == User.id).where(User.tg_id == tg_id))).scalar(),
+                    SlotLimit.faculty_id == faculty_id,
                     SlotLimit.date == date
                 )
             )
             slot_limits = dict(result_limits.all())
             await redis.set(cache_key, str(slot_limits), ex=60)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in slot_limits.keys()],
-        [InlineKeyboardButton(text="Назад", callback_data="create_slots")]
-    ])
-    text = f"<b>Доступно слотов на {date}:</b>\n\n"
-    for time_slot, limit in slot_limits.items():
-        text += f"• {time_slot} — <b>{limit}</b> слотов\n"
-    text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in slot_limits.keys()],
+            [InlineKeyboardButton(text="Назад", callback_data="create_slots")]
+        ])
+        text = f"<b>Доступно слотов на {date}:</b>\n\n"
+        for time_slot, limit in slot_limits.items():
+            text += f"• {time_slot} — <b>{limit}</b> слотов\n"
+        text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data == "create_slots")
 async def back_to_dates(callback: CallbackQuery):
