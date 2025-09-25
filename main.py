@@ -516,7 +516,9 @@ async def slot_time_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("slot_count:"))
 async def slot_count_callback(callback: CallbackQuery):
-    _, date, time_slot, count = callback.data.split(":", 3)
+    data = callback.data[len("slot_count:"):]
+    rest, count = data.rsplit(":", 1)
+    date, time_slot = rest.split(":", 1)
     count = int(count)
     tg_id = str(callback.from_user.id)
     async for session in get_session():
