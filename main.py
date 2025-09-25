@@ -393,55 +393,46 @@ async def create_slots(message: Message):
 async def slot_date_callback(callback: CallbackQuery):
     date = callback.data.split(":", 1)[1]
     tg_id = str(callback.from_user.id)
-    async for session in get_session():
-        # Проверяем, что пользователь — админ факультета
-        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
-        row = result.first()
-        if not row:
-            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
-            return
-        admin, faculty = row
-        # Получаем все интервалы времени для выбранной даты
-        result_times = await session.execute(
-            select(Availability.time_slot, func.count()).where(
-                Availability.faculty_id == faculty.id,
-                Availability.date == date,
-                Availability.is_available == True
-            ).group_by(Availability.time_slot)
-        )
-        time_counts = dict(result_times.all())
-        # Получаем лимиты слотов для каждого времени
-        result_limits = await session.execute(
-            select(SlotLimit.time_slot, SlotLimit.limit).where(
-                SlotLimit.faculty_id == faculty.id,
-                SlotLimit.date == date
+    redis = await get_redis()
+    cache_key = f"slot_limits:{tg_id}:{date}"
+    cached = await redis.get(cache_key)
+    if cached:
+        slot_limits = eval(cached)
+    else:
+        async for session in get_session():
+            result_limits = await session.execute(
+                select(SlotLimit.time_slot, SlotLimit.limit).where(
+                    SlotLimit.faculty_id == (await session.execute(select(Faculty.id).join(User, Faculty.admin_id == User.id).where(User.tg_id == tg_id))).scalar(),
+                    SlotLimit.date == date
+                )
             )
-        )
-        slot_limits = dict(result_limits.all())
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in time_counts.keys()],
-            [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
-        ])
-        text = f"<b>Доступно слотов на {date}:</b>\n\n"
-        for time_slot in time_counts.keys():
-            limit = slot_limits.get(time_slot, 0)
-            text += f"• {time_slot} — <b>{limit}</b> слотов\n"
-        text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            slot_limits = dict(result_limits.all())
+            await redis.set(cache_key, str(slot_limits), ex=60)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        *[[InlineKeyboardButton(text=f"{time_slot}", callback_data=f"slot_time:{date}:{time_slot}")] for time_slot in slot_limits.keys()],
+        [InlineKeyboardButton(text="Назад", callback_data="create_slots")]
+    ])
+    text = f"<b>Доступно слотов на {date}:</b>\n\n"
+    for time_slot, limit in slot_limits.items():
+        text += f"• {time_slot} — <b>{limit}</b> слотов\n"
+    text += "\n<i>Число слотов задаёт админ вручную, исходя из отметок 'могу'.</i>"
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data == "create_slots")
+async def back_to_dates(callback: CallbackQuery):
+    await create_slots(callback.message)
 
 @dp.callback_query(F.data.startswith("slot_time:"))
 async def slot_time_callback(callback: CallbackQuery):
     _, date, time_slot = callback.data.split(":", 2)
     tg_id = str(callback.from_user.id)
     async for session in get_session():
-        # Проверяем, что пользователь — админ факультета
         result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
         row = result.first()
         if not row:
             await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
-        # Получаем всех пользователей, которые могут в это время и день
         result_users = await session.execute(
             select(User).join(Availability, Availability.user_id == User.id).where(
                 Availability.faculty_id == faculty.id,
@@ -452,7 +443,6 @@ async def slot_time_callback(callback: CallbackQuery):
         )
         users = result_users.scalars().all()
         user_list = "\n".join([f"• {u.first_name} {u.last_name}" for u in users]) or "Нет доступных людей"
-        # Получаем текущее количество слотов из SlotLimit
         result_limit = await session.execute(
             select(SlotLimit.limit).where(
                 SlotLimit.faculty_id == faculty.id,
