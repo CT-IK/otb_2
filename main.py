@@ -368,25 +368,30 @@ async def create_slots(message: Message):
             await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
-        # Получаем даты, где есть хотя бы один 'могу'
+        # Получаем все даты, где есть хотя бы один 'могу'
         result_dates = await session.execute(
-            select(Availability.date, func.count()).where(
+            select(Availability.date).where(
                 Availability.faculty_id == faculty.id,
                 Availability.is_available == True
-            ).group_by(Availability.date)
+            ).distinct()
         )
-        date_counts = result_dates.all()
-        if not date_counts:
-            await message.answer("Нет доступных дат для записи.")
-            return
+        dates = [r[0] for r in result_dates.all()]
+        # Получаем лимиты слотов для каждой даты (по умолчанию 0)
+        result_limits = await session.execute(
+            select(SlotLimit.date, func.sum(SlotLimit.limit)).where(
+                SlotLimit.faculty_id == faculty.id
+            ).group_by(SlotLimit.date)
+        )
+        slot_limits = dict(result_limits.all())
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            *[[InlineKeyboardButton(text=f"{date}", callback_data=f"slot_date:{date}")] for date, _ in date_counts],
+            *[[InlineKeyboardButton(text=f"{date}", callback_data=f"slot_date:{date}")] for date in dates],
             [InlineKeyboardButton(text="Назад", callback_data="slot_back")]
         ])
         text = "<b>Выберите дату для создания слотов.</b>\n\n"
-        text += "Доступные даты и количество отметок 'могу':\n"
-        for date, count in date_counts:
-            text += f"• {date} — <b>{count}</b>\n"
+        text += "Даты и количество сделанных слотов (по умолчанию 0):\n"
+        for date in dates:
+            limit = slot_limits.get(date, 0)
+            text += f"• {date} — <b>{limit}</b> слотов\n"
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("slot_date:"))
