@@ -9,7 +9,7 @@ from aiogram import F
 import asyncio
 from db.engine import get_session
 from db.models import User, Faculty, Candidate
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 import gspread
@@ -57,6 +57,10 @@ async def set_people(message: Message):
     await message.answer("Начинаю загрузку данных. Это может занять несколько минут...")
     try:
         async for session in get_session():
+            # Получаем максимальный id в users
+            max_id_result = await session.execute(select(func.max(User.id)))
+            max_id = max_id_result.scalar() or 0
+            next_id = max_id + 1
             # Проверяем, что пользователь — админ факультета
             result_user = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
             row = result_user.first()
@@ -95,12 +99,14 @@ async def set_people(message: Message):
                     break
                 first_name, last_name = row[2], row[3]
                 stmt = insert(User).values(
+                    id=next_id,
                     first_name=first_name,
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
                 )
                 await session.execute(stmt)
+                next_id += 1
                 added_exp += 1
             # Парсим не опытных собесеров
             ws_noexp = sh.worksheet("Не опытные собесеры")
@@ -111,18 +117,20 @@ async def set_people(message: Message):
                     break
                 first_name, last_name = row[2], row[3]
                 stmt = insert(User).values(
+                    id=next_id,
                     first_name=first_name,
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
                 )
                 await session.execute(stmt)
+                next_id += 1
                 added_noexp += 1
             await session.commit()
             await message.answer(f"Добавлено кандидатов: {added_candidates}\nОпытных собесеров: {added_exp}\nНе опытных собесеров: {added_noexp}")
     except Exception as e:
         tb = traceback.format_exc()
-        await message.answer(f"Произошла ошибка при загрузке данных:\n{e}\n{tb[-1500:]}")
+        await message.answer(f"Произошла ошибка при загрузке данных:\n<pre>{e}\n{tb[-1500:]}</pre>")
 
 async def main():
 	await dp.start_polling(bot)
