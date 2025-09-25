@@ -240,33 +240,46 @@ async def create_lists(message: Message):
                 "strict": True
             }
             created = 0
+            existing_sheets = {ws.title for ws in sh.worksheets()}
             for user in sobesers:
                 sheet_name = f"{user.first_name}_{user.last_name}"
-                if sheet_name in [ws.title for ws in sh.worksheets()]:
+                if sheet_name in existing_sheets:
                     continue
-                worksheet = sh.add_worksheet(title=sheet_name, rows="20", cols="10")
-                worksheet.update([dates], "B1")
-                for i, t in enumerate(times, start=2):
-                    worksheet.update([[t]], f"A{i}")
-                requests = []
-                for row in range(2, 14):
-                    for col in range(2, 10):
-                        requests.append({
-                            "setDataValidation": {
-                                "range": {
-                                    "sheetId": worksheet._properties["sheetId"],
-                                    "startRowIndex": row-1,
-                                    "endRowIndex": row,
-                                    "startColumnIndex": col-1,
-                                    "endColumnIndex": col
-                                },
-                                "rule": rule
-                            }
-                        })
-                sh.batch_update({"requests": requests})
-                worksheet.update([[str(user.id)]], "A15")
-                created += 1
-                await asyncio.sleep(1)
+                retry_count = 0
+                while retry_count < 3:
+                    try:
+                        worksheet = sh.add_worksheet(title=sheet_name, rows="20", cols="10")
+                        worksheet.update([dates], "B1")
+                        for i, t in enumerate(times, start=2):
+                            worksheet.update([[t]], f"A{i}")
+                        requests = []
+                        for row in range(2, 14):
+                            for col in range(2, 10):
+                                requests.append({
+                                    "setDataValidation": {
+                                        "range": {
+                                            "sheetId": worksheet._properties["sheetId"],
+                                            "startRowIndex": row-1,
+                                            "endRowIndex": row,
+                                            "startColumnIndex": col-1,
+                                            "endColumnIndex": col
+                                        },
+                                        "rule": rule
+                                    }
+                                })
+                        sh.batch_update({"requests": requests})
+                        worksheet.update([[str(user.id)]], "A15")
+                        created += 1
+                        await asyncio.sleep(5)
+                        break
+                    except gspread.exceptions.APIError as e:
+                        if "429" in str(e):
+                            retry_count += 1
+                            await asyncio.sleep(30 * retry_count)
+                        else:
+                            break
+                    except Exception:
+                        break
             await message.answer(f"Создано листов: {created}")
     except Exception as e:
         import traceback
