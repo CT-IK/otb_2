@@ -431,16 +431,27 @@ async def slot_time_callback(callback: CallbackQuery):
             )
         )
         users = result_users.scalars().all()
-        user_list = "\n".join([f"{u.first_name} {u.last_name}" for u in users]) or "Нет доступных людей"
-        # Получаем текущее количество слотов (заглушка, нужна отдельная таблица для хранения лимита)
-        # Пока просто выводим 0
-        current_slots = 0
+        user_list = "\n".join([f"• {u.first_name} {u.last_name}" for u in users]) or "Нет доступных людей"
+        # Получаем текущее количество слотов из SlotLimit
+        result_limit = await session.execute(
+            select(SlotLimit.limit).where(
+                SlotLimit.faculty_id == faculty.id,
+                SlotLimit.date == date,
+                SlotLimit.time_slot == time_slot
+            )
+        )
+        slot_limit = result_limit.scalar()
+        current_slots = slot_limit if slot_limit is not None else 0
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}")]
         ])
-        text = f"{date} — {time_slot}\n\nДоступные люди:\n{user_list}\n\nВыберите максимальное количество слотов для записи на это время: (текущее: {current_slots})"
-        await callback.message.edit_text(text, reply_markup=kb)
+        text = (
+            f"<b>{date} — {time_slot}</b>\n\n"
+            f"<b>Доступные люди:</b>\n{user_list}\n\n"
+            f"<b>Максимальное количество слотов для записи:</b> <b>{current_slots}</b>\n\n"
+            f"Чтобы изменить лимит, используйте команду /set_slot_limit {date} {time_slot} <число>"
+        )
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("slot_count:"))
 async def slot_count_callback(callback: CallbackQuery):
