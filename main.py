@@ -230,22 +230,32 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
         if not slot_limit or slot_limit.limit <= 0:
             await callback.message.edit_text("Лимит на этот слот исчерпан.")
             return
-        # Кнопка назад к выбору времени
+        # Записываем кандидата
+        reg = InterviewRegistration(
+            user_id=user.id,
+            faculty_id=faculty_id,
+            date=date,
+            time_slot=time_slot
+        )
+        session.add(reg)
+        # Уменьшаем лимит
+        slot_limit.limit -= 1
+        await session.commit()
+        # Уведомляем админа факультета
+        admin = await session.scalar(select(User).where(User.id == (await session.scalar(select(Faculty.admin_id).where(Faculty.id == faculty_id)))))
+        if admin:
+            try:
+                await bot.send_message(admin.tg_id, f"Кандидат {user.first_name} {user.last_name} записался на собеседование: {date} {time_slot}")
+            except Exception:
+                pass
+        # Показываем меню кандидата с кнопкой записи
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Назад", callback_data=f"reg_back_to_times:{date}")]
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
             ]
         )
-        # Подтверждение записи (можно доработать под UX)
-        await callback.message.edit_text(
-            f"Подтвердите запись на собеседование: {date} {time_slot}",
-            reply_markup=kb
-        )
-        # Здесь можно добавить дополнительное подтверждение, если нужно
-        # Если подтверждение не требуется, то ниже оставить старую логику
-        # ---
-        # Для простоты: если пользователь нажимает ещё раз на этот слот — записываем
-        # (или добавить отдельную кнопку 'Подтвердить')
+        await callback.message.edit_text(f"Вы успешно записаны на собеседование: {date} {time_slot}", reply_markup=kb)
+        await state.clear()
 
 
 @dp.callback_query(InterviewFSM.choosing_time, F.data == "reg_back_to_dates")
