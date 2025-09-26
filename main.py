@@ -336,6 +336,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
 
         # --- Асинхронная задача для Google Sheet ---
         import asyncio
+        import logging
         async def add_to_google_sheet(user_id, first_name, last_name, faculty_id, date, time_slot):
             try:
                 import gspread
@@ -345,11 +346,13 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                 async for session2 in get_session():
                     faculty = await session2.scalar(select(Faculty).where(Faculty.id == faculty_id))
                     if not (faculty and faculty.google_sheet_url):
+                        logging.error(f"[GSHEET] Не найден факультет или ссылка на таблицу: faculty_id={faculty_id}")
                         return
                     sh = gc.open_by_url(faculty.google_sheet_url)
                     try:
                         ws = sh.worksheet("Записи")
-                    except Exception:
+                    except Exception as e:
+                        logging.warning(f"[GSHEET] Не найден лист 'Записи', создаём: {e}")
                         ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
                     # Получаем всех собесеров факультета
                     result_all_sobesers = await session2.execute(
@@ -378,6 +381,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                             to_delete.append(idx)
                     for idx in reversed(to_delete):
                         ws.delete_rows(idx)
+                        logging.info(f"[GSHEET] Удалена старая запись: row={idx}, user_id={user_id}")
                         await asyncio.sleep(5)
                     # Добавляем новую строку с пустыми значениями для dropdown
                     row = [
@@ -386,6 +390,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                         "", "", "", ""
                     ]
                     ws.append_row(row)
+                    logging.info(f"[GSHEET] Добавлена строка: {row}")
                     await asyncio.sleep(5)
                     row_num = len(all_rows) - len(to_delete) + 1
                     # Добавляем dropdown для 3 и 4 столбца (только те, кто может)
@@ -395,6 +400,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                             showCustomUi=True
                         )
                         set_data_validation_for_cell_range(ws, f"C{row_num}:D{row_num}", rule_avail)
+                        logging.info(f"[GSHEET] Добавлен dropdown для C{row_num}:D{row_num} — {avail_names}")
                         await asyncio.sleep(5)
                     # Для 5 и 6 столбца — все собесеры факультета
                     if all_sobesers_names:
@@ -403,9 +409,12 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                             showCustomUi=True
                         )
                         set_data_validation_for_cell_range(ws, f"E{row_num}:F{row_num}", rule_all)
+                        logging.info(f"[GSHEET] Добавлен dropdown для E{row_num}:F{row_num} — {all_sobesers_names}")
                         await asyncio.sleep(5)
-            except Exception:
-                pass
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                logging.error(f"[GSHEET] Ошибка при добавлении записи: {e}\n{tb}")
         # Запускаем задачу в фоне
         asyncio.create_task(add_to_google_sheet(user.id, user.first_name, user.last_name, faculty_id, date, time_slot))
         # Уведомляем админа факультета с указанием собеседующих
@@ -1062,14 +1071,17 @@ async def slot_time_callback(callback: CallbackQuery):
         current_slots = slot_limit if slot_limit is not None else 0
         kb = InlineKeyboardMarkup(inline_keyboard=[
             *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
-            [InlineKeyboardButton(text="Добавить", callback_data=f"slot_add:{date}:{time_slot}")],
+            [
+                InlineKeyboardButton(text="Добавить", callback_data=f"slot_add:{date}:{time_slot}"),
+                InlineKeyboardButton(text="Удалить", callback_data=f"slot_del:{date}:{time_slot}")
+            ],
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}")]
         ])
         text = (
             f"<b>{date} — {time_slot}</b>\n\n"
             f"<b>Доступные люди:</b>\n{user_list}\n\n"
-            f"<b>Максимальное количество слотов для записи:</b> <b>{current_slots}</b>\n\n"
-            f"Выберите лимит с помощью кнопок ниже или добавьте дополнительные места."
+            f"<b>Текущее количество слотов:</b> <b>{current_slots}</b>\n\n"
+            f"Выберите лимит, добавьте или удалите места."
         )
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
@@ -1077,18 +1089,30 @@ async def slot_time_callback(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("slot_add:"))
 async def slot_add_callback(callback: CallbackQuery):
     _, date, time_slot = callback.data.split(":", 2)
-    # Показываем выбор количества для добавления
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_add_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
-        [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+        *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_add_count:{date}:{time_slot}|{i}")] for i in range(0, 11)],
+        [InlineKeyboardButton(text="Назад", callback_data=f"slot_add_back:{date}:{time_slot}")]
     ])
     await callback.message.edit_text(f"Сколько мест добавить к {date} {time_slot}?", reply_markup=kb)
+
+# Кнопка назад из режима добавления
+@dp.callback_query(F.data.startswith("slot_add_back:"))
+async def slot_add_back_callback(callback: CallbackQuery):
+    _, date, time_slot = callback.data.split(":", 2)
+    await slot_time_callback(callback=callback)
 
 # --- Обработка выбора количества для добавления ---
 @dp.callback_query(F.data.startswith("slot_add_count:"))
 async def slot_add_count_callback(callback: CallbackQuery):
-    _, date, time_slot, add_count = callback.data.split(":", 3)
-    add_count = int(add_count)
+    # slot_add_count:date:time_slot|add_count
+    data = callback.data[len("slot_add_count:"):]
+    slot_info, add_count = data.split("|", 1)
+    date, time_slot = slot_info.split(":", 1)
+    try:
+        add_count = int(add_count)
+    except Exception:
+        await callback.message.edit_text("Ошибка: не удалось определить количество для добавления.")
+        return
     tg_id = str(callback.from_user.id)
     async for session in get_session():
         result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
@@ -1097,7 +1121,6 @@ async def slot_add_count_callback(callback: CallbackQuery):
             await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
-        # Получаем текущий лимит
         slot_limit_obj = await session.scalar(
             select(SlotLimit).where(
                 SlotLimit.faculty_id == faculty.id,
@@ -1105,10 +1128,10 @@ async def slot_add_count_callback(callback: CallbackQuery):
                 SlotLimit.time_slot == time_slot
             )
         )
+        before = slot_limit_obj.limit if slot_limit_obj else 0
         if slot_limit_obj:
             slot_limit_obj.limit += add_count
         else:
-            # Если нет — создаём
             slot_limit_obj = SlotLimit(
                 faculty_id=faculty.id,
                 date=date,
@@ -1117,10 +1140,78 @@ async def slot_add_count_callback(callback: CallbackQuery):
             )
             session.add(slot_limit_obj)
         await session.commit()
+        after = slot_limit_obj.limit
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
         ])
-        await callback.message.edit_text(f"Добавлено {add_count} мест к {date} {time_slot}.", reply_markup=kb)
+        await callback.message.edit_text(
+            f"Добавлено <b>{add_count}</b> мест к {date} {time_slot}.\n\nБыло: <b>{before}</b>\nСтало: <b>{after}</b>",
+            reply_markup=kb, parse_mode="HTML"
+        )
+
+# --- Удаление слотов: обработка кнопки 'Удалить' ---
+@dp.callback_query(F.data.startswith("slot_del:"))
+async def slot_del_callback(callback: CallbackQuery):
+    _, date, time_slot = callback.data.split(":", 2)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_del_count:{date}:{time_slot}|{i}")] for i in range(0, 11)],
+        [InlineKeyboardButton(text="Назад", callback_data=f"slot_del_back:{date}:{time_slot}")]
+    ])
+    await callback.message.edit_text(f"Сколько мест удалить из {date} {time_slot}?", reply_markup=kb)
+
+# Кнопка назад из режима удаления
+@dp.callback_query(F.data.startswith("slot_del_back:"))
+async def slot_del_back_callback(callback: CallbackQuery):
+    _, date, time_slot = callback.data.split(":", 2)
+    await slot_time_callback(callback=callback)
+
+# --- Обработка выбора количества для удаления ---
+@dp.callback_query(F.data.startswith("slot_del_count:"))
+async def slot_del_count_callback(callback: CallbackQuery):
+    # slot_del_count:date:time_slot|del_count
+    data = callback.data[len("slot_del_count:"):]
+    slot_info, del_count = data.split("|", 1)
+    date, time_slot = slot_info.split(":", 1)
+    try:
+        del_count = int(del_count)
+    except Exception:
+        await callback.message.edit_text("Ошибка: не удалось определить количество для удаления.")
+        return
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        slot_limit_obj = await session.scalar(
+            select(SlotLimit).where(
+                SlotLimit.faculty_id == faculty.id,
+                SlotLimit.date == date,
+                SlotLimit.time_slot == time_slot
+            )
+        )
+        before = slot_limit_obj.limit if slot_limit_obj else 0
+        if slot_limit_obj and del_count > 0:
+            slot_limit_obj.limit = max(0, slot_limit_obj.limit - del_count)
+            await session.commit()
+            after = slot_limit_obj.limit
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+            ])
+            await callback.message.edit_text(
+                f"Удалено <b>{del_count}</b> мест из {date} {time_slot}.\n\nБыло: <b>{before}</b>\nСтало: <b>{after}</b>",
+                reply_markup=kb, parse_mode="HTML"
+            )
+        else:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+            ])
+            await callback.message.edit_text(
+                f"Невозможно удалить {del_count} мест. Текущее количество: <b>{before}</b>.",
+                reply_markup=kb, parse_mode="HTML"
+            )
 
 @dp.callback_query(F.data.startswith("slot_count:"))
 async def slot_count_callback(callback: CallbackQuery):
