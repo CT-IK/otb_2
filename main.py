@@ -88,7 +88,14 @@ async def vk_yes_callback(call: CallbackQuery):
                 faculty_id=candidate.faculty_id
             ))
             await session.commit()
-    await call.message.answer("Вы успешно зарегистрированы!")
+
+    kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+            ]
+        )
+    
+    await call.message.answer("Вы успешно зарегистрированы!", reply_markup=kb)
     await call.message.edit_reply_markup()
 
 # --- Callback Нет ---
