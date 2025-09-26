@@ -1,3 +1,8 @@
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+# --- FSM для регистрации по VK ID ---
+
+
 # Простой Telegram-бот на aiogram, который определяет роль пользователя по базе данных
 import os
 from aiogram import Bot, Dispatcher, types
@@ -29,6 +34,77 @@ async def get_redis():
     if redis_client is None:
         redis_client = redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
     return redis_client
+
+class VKAuth(StatesGroup):
+    waiting_vk_id = State()
+
+# --- Хэндлер старта для обычных пользователей ---
+@dp.message(Command("start"))
+async def start_handler(message: types.Message, state: FSMContext):
+    tg_id = str(message.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if user and (user.is_admin_faculty or user.is_sobeser):
+            await message.answer("Вы уже авторизованы как сотрудник.")
+            return
+    await message.answer("Пожалуйста, введите ваш VK ID для регистрации:")
+    await state.set_state(VKAuth.waiting_vk_id)
+
+# --- Хэндлер ввода VK ID ---
+@dp.message(VKAuth.waiting_vk_id)
+async def vk_id_handler(message: types.Message, state: FSMContext):
+    vk_id = message.text.strip()
+    async for session in get_session():
+        candidate = await session.scalar(select(Candidate).where(Candidate.vk_id == vk_id))
+        if not candidate:
+            await message.answer("Пользователь с таким VK ID не найден. Попробуйте ещё раз:")
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да", callback_data=f"vk_yes_{candidate.id}"),
+             InlineKeyboardButton(text="Нет", callback_data="vk_no")]
+        ])
+        await message.answer(
+            f"Пользователь {candidate.first_name} {candidate.last_name} найден!\nЭто вы?",
+            reply_markup=kb
+        )
+        await state.clear()
+
+# --- Callback Да ---
+@dp.callback_query(F.data.startswith("vk_yes_"))
+async def vk_yes_callback(call: CallbackQuery):
+    candidate_id = int(call.data.split("_")[-1])
+    async for session in get_session():
+        candidate = await session.scalar(select(Candidate).where(Candidate.id == candidate_id))
+        if not candidate:
+            await call.message.answer("Ошибка: кандидат не найден.")
+            return
+        # Обновляем или создаём пользователя
+        user = await session.scalar(select(User).where(User.vk_id == candidate.vk_id))
+        if user:
+            user.tg_id = str(call.from_user.id)
+            user.first_name = candidate.first_name
+            user.last_name = candidate.last_name
+            user.faculty_id = candidate.faculty_id
+        else:
+            session.add(User(
+                vk_id=candidate.vk_id,
+                tg_id=str(call.from_user.id),
+                first_name=candidate.first_name,
+                last_name=candidate.last_name,
+                faculty_id=candidate.faculty_id
+            ))
+        await session.commit()
+    await call.message.answer("Вы успешно зарегистрированы!")
+    await call.message.edit_reply_markup()
+
+# --- Callback Нет ---
+@dp.callback_query(F.data == "vk_no")
+async def vk_no_callback(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("Пожалуйста, введите ваш VK ID ещё раз:")
+    await call.message.edit_reply_markup()
+    await state.set_state(VKAuth.waiting_vk_id)
+
+
 
 @dp.message(Command("role"))
 async def get_role(message: Message):
