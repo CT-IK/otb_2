@@ -178,14 +178,12 @@ async def set_people(message: Message):
                     break
                 first_name, last_name = row[2], row[3]
                 stmt = insert(User).values(
-                    id=next_id,
                     first_name=first_name,
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
                 )
                 await session.execute(stmt)
-                next_id += 1
                 added_exp += 1
             # Парсим не опытных собесеров
             ws_noexp = sh.worksheet("Не опытные собесеры")
@@ -196,14 +194,12 @@ async def set_people(message: Message):
                     break
                 first_name, last_name = row[2], row[3]
                 stmt = insert(User).values(
-                    id=next_id,
                     first_name=first_name,
                     last_name=last_name,
                     is_sobeser=True,
                     faculty_id=faculty.id
                 )
                 await session.execute(stmt)
-                next_id += 1
                 added_noexp += 1
             await session.commit()
             await message.answer(f"Добавлено кандидатов: {added_candidates}\nОпытных собесеров: {added_exp}\nНе опытных собесеров: {added_noexp}")
