@@ -1,3 +1,42 @@
+# --- Обработчик отмены записи кандидата ---
+@dp.callback_query(F.data == "cancel_interview")
+async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        reg = await session.scalar(
+            select(InterviewRegistration).where(
+                InterviewRegistration.user_id == user.id,
+                InterviewRegistration.canceled == False
+            )
+        )
+        if not reg:
+            await callback.message.edit_text("У вас нет активной записи.")
+            return
+        # Отменяем запись
+        reg.canceled = True
+        # Возвращаем лимит
+        slot_limit = await session.scalar(
+            select(SlotLimit).where(
+                SlotLimit.faculty_id == reg.faculty_id,
+                SlotLimit.date == reg.date,
+                SlotLimit.time_slot == reg.time_slot
+            )
+        )
+        if slot_limit:
+            slot_limit.limit += 1
+        await session.commit()
+        # Показываем меню кандидата
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+            ]
+        )
+        await callback.message.edit_text("Ваша запись отменена. Меню кандидата:", reply_markup=kb)
+        await state.clear()
 
 # --- Обработчик кнопки 'Назад' на этапе выбора времени ---
 
@@ -120,12 +159,32 @@ async def candidate_menu(message: types.Message):
         if not user or not user.is_candidate:
             await message.answer("Вы не зарегистрированы как кандидат.")
             return
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
-            ]
+        # Проверяем активную запись
+        reg = await session.scalar(
+            select(InterviewRegistration).where(
+                InterviewRegistration.user_id == user.id,
+                InterviewRegistration.canceled == False
+            )
         )
-        await message.answer("Меню кандидата:", reply_markup=kb)
+        if reg:
+            text = (
+                f"<b>Вы уже записаны на собеседование:</b>\n"
+                f"\n<b>Дата:</b> {reg.date}"
+                f"\n<b>Время:</b> {reg.time_slot}"
+            )
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Отменить запись", callback_data="cancel_interview")]
+                ]
+            )
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        else:
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+                ]
+            )
+            await message.answer("Меню кандидата:", reply_markup=kb)
 
 # --- Кнопка записи кандидата ---
 @dp.callback_query(F.data == "register_interview")
@@ -255,13 +314,18 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                 await bot.send_message(admin.tg_id, f"Кандидат {user.first_name} {user.last_name} записался на собеседование: {date} {time_slot}")
             except Exception:
                 pass
-        # Показываем меню кандидата с кнопкой записи
+        # Показываем отбивку с кнопкой отмены
+        text = (
+            f"<b>Вы успешно записаны на собеседование!</b>\n"
+            f"\n<b>Дата:</b> {date}"
+            f"\n<b>Время:</b> {time_slot}"
+        )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+                [InlineKeyboardButton(text="Отменить запись", callback_data="cancel_interview")]
             ]
         )
-        await callback.message.edit_text(f"Вы успешно записаны на собеседование: {date} {time_slot}", reply_markup=kb)
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         await state.clear()
 
 
