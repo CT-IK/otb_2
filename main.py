@@ -54,7 +54,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     await message.answer(
         "Пожалуйста, введите ваш VK ID для регистрации.\n\n"
         "<b>VK ID</b> — это числовой идентификатор вашей страницы ВКонтакте.\n"
-        "Его можно узнать, открыв свой профиль в VK и посмотрев на адрес страницы: https://vk.com/id<номер>\n"
+        "Его можно узнать, открыв свой профиль в VK и посмотрев на адрес страницы: https://vk.com/id123456\n"
         "Например, если адрес https://vk.com/id123456, то ваш VK ID — <b>123456</b>."
     )
     await state.set_state(VKAuth.waiting_vk_id)
