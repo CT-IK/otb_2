@@ -51,7 +51,12 @@ async def start_handler(message: types.Message, state: FSMContext):
         if user and (user.is_admin_faculty or user.is_sobeser):
             await message.answer("Вы уже авторизованы как сотрудник.")
             return
-    await message.answer("Пожалуйста, введите ваш VK ID для регистрации:")
+    await message.answer(
+        "Пожалуйста, введите ваш VK ID для регистрации.\n\n"
+        "<b>VK ID</b> — это числовой идентификатор вашей страницы ВКонтакте.\n"
+        "Его можно узнать, открыв свой профиль в VK и посмотрев на адрес страницы: https://vk.com/id<номер>\n"
+        "Например, если адрес https://vk.com/id123456, то ваш VK ID — <b>123456</b>."
+    )
     await state.set_state(VKAuth.waiting_vk_id)
 
 @dp.message(VKAuth.waiting_vk_id)
@@ -164,7 +169,7 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
                 SlotLimit.limit > 0
             ).distinct()
         )
-        # Фильтруем даты: только те, до которых больше 1 часа (день в день)
+        # Фильтруем даты: только те, до которых больше 4 часов (день в день)
         dates = []
         for r in result.all():
             try:
@@ -175,8 +180,8 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
                     slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
                 else:
                     slot_dt = datetime.datetime.fromisoformat(slot_date)
-                # Если дата сегодня или позже, показываем
-                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=1)):
+                # Если дата сегодня или позже, и до неё больше 4 часов
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=4)):
                     dates.append(slot_date)
             except Exception:
                 continue
@@ -224,7 +229,7 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
         user = await session.scalar(select(User).where(User.tg_id == tg_id))
         faculty_id = user.faculty_id
         now = datetime.datetime.now()
-        # Получаем доступные интервалы времени с лимитом > 0 и фильтруем по 1 часу
+        # Получаем доступные интервалы времени с лимитом > 0 и фильтруем по 4 часам
         result = await session.execute(
             select(SlotLimit.time_slot, SlotLimit.date).where(
                 SlotLimit.faculty_id == faculty_id,
@@ -245,8 +250,8 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
                 if '-' in ts:
                     start_time = ts.split('-')[0].strip()
                     slot_dt = slot_dt.replace(hour=int(start_time[:2]), minute=int(start_time[3:5]))
-                # Можно записаться, если слот сегодня и до него больше 1 часа, либо слот в будущем
-                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=1)):
+                # Можно записаться, если слот сегодня и до него больше 4 часов, либо слот в будущем
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=4)):
                     time_slots.append(ts)
             except Exception:
                 continue
@@ -478,7 +483,7 @@ async def register_interview_back_to_dates(callback: CallbackQuery, state: FSMCo
                     slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
                 else:
                     slot_dt = datetime.datetime.fromisoformat(slot_date)
-                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=1)):
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=4)):
                     dates.append(slot_date)
             except Exception:
                 continue
@@ -520,7 +525,24 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
                 SlotLimit.limit > 0
             )
         )
-        time_slots = [r[0] for r in result.all()]
+        time_slots = []
+        for r in result.all():
+            try:
+                slot_time = r[0]
+                # date уже есть в переменной date
+                if len(date) >= 5 and date[2] == '.':
+                    day, month = date[:2], date[3:5]
+                    year = str(now.year)
+                    slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
+                else:
+                    slot_dt = datetime.datetime.fromisoformat(date)
+                if '-' in slot_time:
+                    start_time = slot_time.split('-')[0].strip()
+                    slot_dt = slot_dt.replace(hour=int(start_time[:2]), minute=int(start_time[3:5]))
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=4)):
+                    time_slots.append(slot_time)
+            except Exception:
+                continue
         if not time_slots:
             await callback.message.edit_text("Нет доступных временных интервалов на эту дату.")
             return
