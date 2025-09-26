@@ -1,9 +1,8 @@
+
+# --- Обработчик кнопки 'Назад' на этапе выбора времени ---
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-# --- FSM для регистрации по VK ID ---
-
-
-# Простой Telegram-бот на aiogram, который определяет роль пользователя по базе данных
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -13,7 +12,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User, Faculty, Candidate, Availability, SlotLimit
+from db.models import User, Faculty, Candidate, Availability, SlotLimit, InterviewRegistration
+
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
@@ -98,6 +98,216 @@ async def vk_no_callback(call: CallbackQuery, state: FSMContext):
     await call.message.edit_reply_markup()
     await state.set_state(VKAuth.waiting_vk_id)
 
+
+class InterviewFSM(StatesGroup):
+    choosing_date = State()
+    choosing_time = State()
+
+
+# --- Меню кандидата ---
+@dp.message(Command("menu"))
+async def candidate_menu(message: types.Message):
+    tg_id = str(message.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await message.answer("Вы не зарегистрированы как кандидат.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+            ]
+        )
+        await message.answer("Меню кандидата:", reply_markup=kb)
+
+# --- Кнопка записи кандидата ---
+@dp.callback_query(F.data == "register_interview")
+async def register_interview_start_callback(callback: CallbackQuery, state: FSMContext):
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        faculty_id = user.faculty_id
+        result = await session.execute(
+            select(SlotLimit.date).where(
+                SlotLimit.faculty_id == faculty_id,
+                SlotLimit.limit > 0
+            ).distinct()
+        )
+        dates = [r[0] for r in result.all()]
+        if not dates:
+            await callback.message.edit_text("Нет доступных дат для записи.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=date, callback_data=f"reg_date:{date}")] for date in dates
+            ] + [
+                [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_menu")]
+            ]
+        )
+        await callback.message.edit_text("Выберите дату для собеседования:", reply_markup=kb)
+        await state.set_state(InterviewFSM.choosing_date)
+# --- Обработчик кнопки 'Назад' на этапе выбора даты ---
+@dp.callback_query(InterviewFSM.choosing_date, F.data == "reg_back_to_menu")
+async def register_interview_back_to_menu(callback: CallbackQuery, state: FSMContext):
+    # Просто возвращаем меню кандидата
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+            ]
+        )
+        await callback.message.edit_text("Меню кандидата:", reply_markup=kb)
+        await state.clear()
+
+@dp.callback_query(InterviewFSM.choosing_date, F.data.startswith("reg_date:"))
+async def register_interview_choose_time(callback: CallbackQuery, state: FSMContext):
+    date = callback.data.split(":", 1)[1]
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        faculty_id = user.faculty_id
+        # Получаем доступные интервалы времени с лимитом > 0
+        result = await session.execute(
+            select(SlotLimit.time_slot).where(
+                SlotLimit.faculty_id == faculty_id,
+                SlotLimit.date == date,
+                SlotLimit.limit > 0
+            )
+        )
+        time_slots = [r[0] for r in result.all()]
+        if not time_slots:
+            await callback.message.edit_text("Нет доступных временных интервалов на эту дату.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=ts, callback_data=f"reg_time:{date}:{ts}")] for ts in time_slots
+            ] + [
+                [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_dates")]
+            ]
+        )
+        await callback.message.edit_text(f"Выберите время для {date}:", reply_markup=kb)
+        await state.update_data(date=date)
+        await state.set_state(InterviewFSM.choosing_time)
+
+
+
+
+@dp.callback_query(InterviewFSM.choosing_time, F.data.startswith("reg_time:"))
+async def register_interview_confirm(callback: CallbackQuery, state: FSMContext):
+    _, date, time_slot = callback.data.split(":", 2)
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        faculty_id = user.faculty_id
+        # Проверяем, не записан ли уже кандидат на этот слот
+        exists = await session.scalar(
+            select(InterviewRegistration).where(
+                InterviewRegistration.user_id == user.id,
+                InterviewRegistration.date == date,
+                InterviewRegistration.time_slot == time_slot,
+                InterviewRegistration.canceled == False
+            )
+        )
+        if exists:
+            await callback.message.edit_text("Вы уже записаны на этот слот.")
+            return
+        # Получаем лимит
+        slot_limit = await session.scalar(
+            select(SlotLimit).where(
+                SlotLimit.faculty_id == faculty_id,
+                SlotLimit.date == date,
+                SlotLimit.time_slot == time_slot
+            )
+        )
+        if not slot_limit or slot_limit.limit <= 0:
+            await callback.message.edit_text("Лимит на этот слот исчерпан.")
+            return
+        # Кнопка назад к выбору времени
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Назад", callback_data=f"reg_back_to_times:{date}")]
+            ]
+        )
+        # Подтверждение записи (можно доработать под UX)
+        await callback.message.edit_text(
+            f"Подтвердите запись на собеседование: {date} {time_slot}",
+            reply_markup=kb
+        )
+        # Здесь можно добавить дополнительное подтверждение, если нужно
+        # Если подтверждение не требуется, то ниже оставить старую логику
+        # ---
+        # Для простоты: если пользователь нажимает ещё раз на этот слот — записываем
+        # (или добавить отдельную кнопку 'Подтвердить')
+
+
+@dp.callback_query(InterviewFSM.choosing_time, F.data == "reg_back_to_dates")
+async def register_interview_back_to_dates(callback: CallbackQuery, state: FSMContext):
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        faculty_id = user.faculty_id
+        result = await session.execute(
+            select(SlotLimit.date).where(
+                SlotLimit.faculty_id == faculty_id,
+                SlotLimit.limit > 0
+            ).distinct()
+        )
+        dates = [r[0] for r in result.all()]
+        if not dates:
+            await callback.message.edit_text("Нет доступных дат для записи.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=date, callback_data=f"reg_date:{date}")] for date in dates
+            ]
+        )
+        await callback.message.edit_text("Выберите дату для собеседования:", reply_markup=kb)
+        await state.set_state(InterviewFSM.choosing_date)
+
+
+# --- Обработчик кнопки 'Назад' на этапе подтверждения (возврат к выбору времени) ---
+@dp.callback_query(F.data.startswith("reg_back_to_times:"))
+async def register_interview_back_to_times(callback: CallbackQuery, state: FSMContext):
+    date = callback.data.split(":", 1)[1]
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        faculty_id = user.faculty_id
+        result = await session.execute(
+            select(SlotLimit.time_slot).where(
+                SlotLimit.faculty_id == faculty_id,
+                SlotLimit.date == date,
+                SlotLimit.limit > 0
+            )
+        )
+        time_slots = [r[0] for r in result.all()]
+        if not time_slots:
+            await callback.message.edit_text("Нет доступных временных интервалов на эту дату.")
+            return
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=ts, callback_data=f"reg_time:{date}:{ts}")] for ts in time_slots
+            ] + [
+                [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_dates")]
+            ]
+        )
+        await callback.message.edit_text(f"Выберите время для {date}:", reply_markup=kb)
+        await state.update_data(date=date)
+        await state.set_state(InterviewFSM.choosing_time)
 
 
 @dp.message(Command("role"))
