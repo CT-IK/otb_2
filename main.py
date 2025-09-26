@@ -246,6 +246,11 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
         # Отправляем картинку перед выбором времени
         IMAGE_PATH = "zhim.png"  # имя файла картинки в корне проекта
         try:
+            # Удаляем reply_markup у предыдущего сообщения, чтобы не было конфликтов
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
             with open(IMAGE_PATH, "rb") as photo:
                 await callback.message.answer_photo(photo)
         except Exception:
@@ -256,7 +261,8 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
                     [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_dates")]
                 ]
             )
-            await callback.message.edit_text("Нет доступных временных интервалов на эту дату.", reply_markup=kb)
+            # Вместо edit_text используем answer, чтобы всегда работала кнопка назад
+            await callback.message.answer("Нет доступных временных интервалов на эту дату.", reply_markup=kb)
             return
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -314,78 +320,94 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
         slot_limit.limit -= 1
         await session.commit()
 
-        # --- Добавление в Google Sheet 'Записи' ---
-        try:
-            import gspread
-            import asyncio
-            # Получаем факультет
-            faculty = await session.scalar(select(Faculty).where(Faculty.id == faculty_id))
-            if faculty and faculty.google_sheet_url:
-                gc = gspread.service_account(filename="credentials.json")
-                sh = gc.open_by_url(faculty.google_sheet_url)
-                try:
-                    ws = sh.worksheet("Записи")
-                except Exception:
-                    ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
-                # Получаем всех собесеров факультета
-                result_all_sobesers = await session.execute(
-                    select(User).where(User.is_sobeser == True, User.faculty_id == faculty_id)
-                )
-                all_sobesers = result_all_sobesers.scalars().all()
-                all_sobesers_names = [f"{s.first_name} {s.last_name}" for s in all_sobesers]
-                # Получаем собесеров, которые могут в это время
-                result_avail = await session.execute(
-                    select(User).join(Availability, Availability.user_id == User.id).where(
-                        User.is_sobeser == True,
-                        User.faculty_id == faculty_id,
-                        Availability.date == date,
-                        Availability.time_slot == time_slot,
-                        Availability.is_available == True
-                    )
-                )
-                avail_sobesers = result_avail.scalars().all()
-                avail_names = [f"{s.first_name} {s.last_name}" for s in avail_sobesers]
-                # Удаляем старую запись, если есть (по id кандидата)
-                all_rows = ws.get_all_values()
-                id_str = str(user.id)
-                to_delete = []
-                for idx, row in enumerate(all_rows, 1):
-                    if row and row[0] == id_str:
-                        to_delete.append(idx)
-                for idx in reversed(to_delete):
-                    ws.delete_rows(idx)
-                    await asyncio.sleep(5)
-                # Добавляем новую запись в конец
-                row = [
-                    str(user.id),
-                    f"{user.first_name} {user.last_name}",
-                    avail_names[0] if len(avail_names) > 0 else "",
-                    avail_names[1] if len(avail_names) > 1 else "",
-                    "",  # 5-й столбец (dropdown)
-                    ""   # 6-й столбец (dropdown)
-                ]
-                ws.append_row(row)
-                await asyncio.sleep(5)
-                # Добавляем dropdown для 3,4,5,6 столбцов
+        # Сообщаем пользователю сразу, не дожидаясь Google Sheets
+        text = (
+            f"<b>Вы успешно записаны на собеседование!</b>\n"
+            f"\n<b>Дата:</b> {date}"
+            f"\n<b>Время:</b> {time_slot}"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Отменить запись", callback_data="cancel_interview")]
+            ]
+        )
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await state.clear()
+
+        # --- Асинхронная задача для Google Sheet ---
+        import asyncio
+        async def add_to_google_sheet(user_id, first_name, last_name, faculty_id, date, time_slot):
+            try:
+                import gspread
                 from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range
-                # Для 3 и 4 столбца — только те, кто может
-                if avail_names:
-                    rule_avail = DataValidationRule(
-                        BooleanCondition('ONE_OF_LIST', avail_names),
-                        showCustomUi=True
+                gc = gspread.service_account(filename="credentials.json")
+                # Получаем факультет
+                async for session2 in get_session():
+                    faculty = await session2.scalar(select(Faculty).where(Faculty.id == faculty_id))
+                    if not (faculty and faculty.google_sheet_url):
+                        return
+                    sh = gc.open_by_url(faculty.google_sheet_url)
+                    try:
+                        ws = sh.worksheet("Записи")
+                    except Exception:
+                        ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
+                    # Получаем всех собесеров факультета
+                    result_all_sobesers = await session2.execute(
+                        select(User).where(User.is_sobeser == True, User.faculty_id == faculty_id)
                     )
-                    set_data_validation_for_cell_range(ws, f"C{len(all_rows)+1}:D{len(all_rows)+1}", rule_avail)
-                    await asyncio.sleep(5)
-                # Для 5 и 6 столбца — все собесеры факультета
-                if all_sobesers_names:
-                    rule_all = DataValidationRule(
-                        BooleanCondition('ONE_OF_LIST', all_sobesers_names),
-                        showCustomUi=True
+                    all_sobesers = result_all_sobesers.scalars().all()
+                    all_sobesers_names = [f"{s.first_name} {s.last_name}" for s in all_sobesers]
+                    # Получаем собесеров, которые могут в это время
+                    result_avail = await session2.execute(
+                        select(User).join(Availability, Availability.user_id == User.id).where(
+                            User.is_sobeser == True,
+                            User.faculty_id == faculty_id,
+                            Availability.date == date,
+                            Availability.time_slot == time_slot,
+                            Availability.is_available == True
+                        )
                     )
-                    set_data_validation_for_cell_range(ws, f"E{len(all_rows)+1}:F{len(all_rows)+1}", rule_all)
+                    avail_sobesers = result_avail.scalars().all()
+                    avail_names = [f"{s.first_name} {s.last_name}" for s in avail_sobesers]
+                    # Удаляем старую запись, если есть (по id кандидата)
+                    all_rows = ws.get_all_values()
+                    id_str = str(user_id)
+                    to_delete = []
+                    for idx, row in enumerate(all_rows, 1):
+                        if row and row[0] == id_str:
+                            to_delete.append(idx)
+                    for idx in reversed(to_delete):
+                        ws.delete_rows(idx)
+                        await asyncio.sleep(5)
+                    # Добавляем новую строку с пустыми значениями для dropdown
+                    row = [
+                        str(user_id),
+                        f"{first_name} {last_name}",
+                        "", "", "", ""
+                    ]
+                    ws.append_row(row)
                     await asyncio.sleep(5)
-        except Exception:
-            pass
+                    row_num = len(all_rows) - len(to_delete) + 1
+                    # Добавляем dropdown для 3 и 4 столбца (только те, кто может)
+                    if avail_names:
+                        rule_avail = DataValidationRule(
+                            BooleanCondition('ONE_OF_LIST', avail_names),
+                            showCustomUi=True
+                        )
+                        set_data_validation_for_cell_range(ws, f"C{row_num}:D{row_num}", rule_avail)
+                        await asyncio.sleep(5)
+                    # Для 5 и 6 столбца — все собесеры факультета
+                    if all_sobesers_names:
+                        rule_all = DataValidationRule(
+                            BooleanCondition('ONE_OF_LIST', all_sobesers_names),
+                            showCustomUi=True
+                        )
+                        set_data_validation_for_cell_range(ws, f"E{row_num}:F{row_num}", rule_all)
+                        await asyncio.sleep(5)
+            except Exception:
+                pass
+        # Запускаем задачу в фоне
+        asyncio.create_task(add_to_google_sheet(user.id, user.first_name, user.last_name, faculty_id, date, time_slot))
         # Уведомляем админа факультета с указанием собеседующих
         admin = await session.scalar(select(User).where(User.id == (await session.scalar(select(Faculty.admin_id).where(Faculty.id == faculty_id)))))
         if admin:
@@ -410,19 +432,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                 await bot.send_message(admin.tg_id, msg, parse_mode="HTML")
             except Exception:
                 pass
-        # Показываем отбивку с кнопкой отмены
-        text = (
-            f"<b>Вы успешно записаны на собеседование!</b>\n"
-            f"\n<b>Дата:</b> {date}"
-            f"\n<b>Время:</b> {time_slot}"
-        )
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Отменить запись", callback_data="cancel_interview")]
-            ]
-        )
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        await state.clear()
+        # ...отбивка теперь выше, чтобы не ждать Google Sheets
 
 
 @dp.callback_query(InterviewFSM.choosing_time, F.data == "reg_back_to_dates")
@@ -434,19 +444,42 @@ async def register_interview_back_to_dates(callback: CallbackQuery, state: FSMCo
             await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
             return
         faculty_id = user.faculty_id
+        now = datetime.datetime.now()
         result = await session.execute(
             select(SlotLimit.date).where(
                 SlotLimit.faculty_id == faculty_id,
                 SlotLimit.limit > 0
             ).distinct()
         )
-        dates = [r[0] for r in result.all()]
+        # Фильтруем даты по актуальности (как в выборе даты)
+        dates = []
+        for r in result.all():
+            try:
+                slot_date = r[0]
+                if len(slot_date) >= 5 and slot_date[2] == '.':
+                    day, month = slot_date[:2], slot_date[3:5]
+                    year = str(now.year)
+                    slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
+                else:
+                    slot_dt = datetime.datetime.fromisoformat(slot_date)
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=1)):
+                    dates.append(slot_date)
+            except Exception:
+                continue
         if not dates:
-            await callback.message.edit_text("Нет доступных дат для записи.")
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_menu")]
+                ]
+            )
+            await callback.message.answer("Нет доступных дат для записи.", reply_markup=kb)
+            await state.set_state(InterviewFSM.choosing_date)
             return
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=date, callback_data=f"reg_date:{date}")] for date in dates
+            ] + [
+                [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_menu")]
             ]
         )
         await callback.message.edit_text("Выберите дату для собеседования:", reply_markup=kb)
