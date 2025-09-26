@@ -82,13 +82,27 @@ async def vk_yes_callback(call: CallbackQuery):
             return
         user = await session.scalar(select(User).where(User.tg_id == str(call.from_user.id)))
         if not user:
-            session.add(User(
+            user = User(
                 tg_id=str(call.from_user.id),
                 first_name=candidate.first_name,
                 last_name=candidate.last_name,
-                faculty_id=candidate.faculty_id
-            ))
+                faculty_id=candidate.faculty_id,
+                vk_id=candidate.vk_id,
+                is_candidate=True
+            )
+            session.add(user)
             await session.commit()
+        else:
+            # Обновляем vk_id и is_candidate, если нужно
+            changed = False
+            if not user.is_candidate:
+                user.is_candidate = True
+                changed = True
+            if not user.vk_id:
+                user.vk_id = candidate.vk_id
+                changed = True
+            if changed:
+                await session.commit()
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
