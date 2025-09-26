@@ -2,7 +2,7 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, Boolean, ForeignKey, Text
 # Модель для хранения временных слотов
-from sqlalchemy import Date, Time
+from sqlalchemy import Date, Time, DateTime
 
 class Base(DeclarativeBase):
     pass
