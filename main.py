@@ -1,3 +1,4 @@
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import os
@@ -10,13 +11,13 @@ from aiogram import F
 import asyncio
 from db.engine import get_session
 from db.models import User, Faculty, Candidate, Availability, SlotLimit, InterviewRegistration
-
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
 import gspread
 import traceback
 import redis.asyncio as redis
+import datetime
 
 load_dotenv()
 
@@ -32,10 +33,16 @@ async def get_redis():
         redis_client = redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
     return redis_client
 
+
 class VKAuth(StatesGroup):
     waiting_vk_id = State()
 
-# --- Хэндлер старта для обычных пользователей ---
+class InterviewFSM(StatesGroup):
+    choosing_date = State()
+    choosing_time = State()
+
+
+# --- VK ID: старт, подтверждение, отказ ---
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     tg_id = str(message.from_user.id)
@@ -47,7 +54,6 @@ async def start_handler(message: types.Message, state: FSMContext):
     await message.answer("Пожалуйста, введите ваш VK ID для регистрации:")
     await state.set_state(VKAuth.waiting_vk_id)
 
-# --- Хэндлер ввода VK ID ---
 @dp.message(VKAuth.waiting_vk_id)
 async def vk_id_handler(message: types.Message, state: FSMContext):
     vk_id = message.text.strip()
@@ -66,7 +72,6 @@ async def vk_id_handler(message: types.Message, state: FSMContext):
         )
         await state.clear()
 
-# --- Callback Да ---
 @dp.callback_query(F.data.startswith("vk_yes_"))
 async def vk_yes_callback(call: CallbackQuery):
     candidate_id = int(call.data.split("_")[-1])
@@ -75,7 +80,6 @@ async def vk_yes_callback(call: CallbackQuery):
         if not candidate:
             await call.message.answer("Ошибка: кандидат не найден.")
             return
-        # Проверяем, есть ли уже пользователь с этим tg_id
         user = await session.scalar(select(User).where(User.tg_id == str(call.from_user.id)))
         if not user:
             session.add(User(
@@ -85,27 +89,20 @@ async def vk_yes_callback(call: CallbackQuery):
                 faculty_id=candidate.faculty_id
             ))
             await session.commit()
-
     kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
-            ]
-        )
-    
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+        ]
+    )
     await call.message.answer("Вы успешно зарегистрированы!", reply_markup=kb)
     await call.message.edit_reply_markup()
 
-# --- Callback Нет ---
 @dp.callback_query(F.data == "vk_no")
 async def vk_no_callback(call: CallbackQuery, state: FSMContext):
     await call.message.answer("Пожалуйста, введите ваш VK ID ещё раз:")
     await call.message.edit_reply_markup()
     await state.set_state(VKAuth.waiting_vk_id)
 
-
-class InterviewFSM(StatesGroup):
-    choosing_date = State()
-    choosing_time = State()
 
 
 # --- Меню кандидата ---
@@ -117,7 +114,6 @@ async def candidate_menu(message: types.Message):
         if not user or not user.is_candidate:
             await message.answer("Вы не зарегистрированы как кандидат.")
             return
-        # Проверяем активную запись
         reg = await session.scalar(
             select(InterviewRegistration).where(
                 InterviewRegistration.user_id == user.id,
@@ -154,13 +150,30 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
             await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
             return
         faculty_id = user.faculty_id
+        now = datetime.datetime.now()
         result = await session.execute(
             select(SlotLimit.date).where(
                 SlotLimit.faculty_id == faculty_id,
                 SlotLimit.limit > 0
             ).distinct()
         )
-        dates = [r[0] for r in result.all()]
+        # Фильтруем даты: только те, до которых больше 12 часов
+        dates = []
+        for r in result.all():
+            try:
+                slot_date = r[0]
+                # Пробуем парсить дату (поддержка формата 'дд.мм(день)' или ISO)
+                if len(slot_date) >= 5 and slot_date[2] == '.':
+                    # Например, '26.09(пт)' -> '26.09.2025'
+                    day, month = slot_date[:2], slot_date[3:5]
+                    year = str(now.year)
+                    slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
+                else:
+                    slot_dt = datetime.datetime.fromisoformat(slot_date)
+                if slot_dt - now >= datetime.timedelta(hours=12):
+                    dates.append(slot_date)
+            except Exception:
+                continue
         if not dates:
             await callback.message.edit_text("Нет доступных дат для записи.")
             return
@@ -191,6 +204,7 @@ async def register_interview_back_to_menu(callback: CallbackQuery, state: FSMCon
         await callback.message.edit_text("Меню кандидата:", reply_markup=kb)
         await state.clear()
 
+
 @dp.callback_query(InterviewFSM.choosing_date, F.data.startswith("reg_date:"))
 async def register_interview_choose_time(callback: CallbackQuery, state: FSMContext):
     date = callback.data.split(":", 1)[1]
@@ -198,15 +212,34 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
     async for session in get_session():
         user = await session.scalar(select(User).where(User.tg_id == tg_id))
         faculty_id = user.faculty_id
-        # Получаем доступные интервалы времени с лимитом > 0
+        now = datetime.datetime.now()
+        # Получаем доступные интервалы времени с лимитом > 0 и фильтруем по 12 часам
         result = await session.execute(
-            select(SlotLimit.time_slot).where(
+            select(SlotLimit.time_slot, SlotLimit.date).where(
                 SlotLimit.faculty_id == faculty_id,
                 SlotLimit.date == date,
                 SlotLimit.limit > 0
             )
         )
-        time_slots = [r[0] for r in result.all()]
+        time_slots = []
+        for r in result.all():
+            ts, slot_date = r
+            try:
+                # Парсим дату + время (если возможно)
+                if len(slot_date) >= 5 and slot_date[2] == '.':
+                    day, month = slot_date[:2], slot_date[3:5]
+                    year = str(now.year)
+                    slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
+                else:
+                    slot_dt = datetime.datetime.fromisoformat(slot_date)
+                # Если time_slot в формате 'HH:MM - HH:MM', берём начало
+                if '-' in ts:
+                    start_time = ts.split('-')[0].strip()
+                    slot_dt = slot_dt.replace(hour=int(start_time[:2]), minute=int(start_time[3:5]))
+                if slot_dt - now >= datetime.timedelta(hours=12):
+                    time_slots.append(ts)
+            except Exception:
+                continue
         if not time_slots:
             await callback.message.edit_text("Нет доступных временных интервалов на эту дату.")
             return
@@ -349,6 +382,8 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
         await state.set_state(InterviewFSM.choosing_time)
 
 
+
+# --- Отмена записи: удаление из базы и возврат лимита ---
 @dp.callback_query(F.data == "cancel_interview")
 async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
     tg_id = str(callback.from_user.id)
@@ -366,8 +401,8 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
         if not reg:
             await callback.message.edit_text("У вас нет активной записи.")
             return
-        # Отменяем запись
-        reg.canceled = True
+        # Удаляем запись полностью
+        await session.delete(reg)
         # Возвращаем лимит
         slot_limit = await session.scalar(
             select(SlotLimit).where(
@@ -379,7 +414,6 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
         if slot_limit:
             slot_limit.limit += 1
         await session.commit()
-        # Показываем меню кандидата
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
