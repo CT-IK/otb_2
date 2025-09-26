@@ -1,3 +1,4 @@
+
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, Boolean, ForeignKey, Text
 # Модель для хранения временных слотов
@@ -73,3 +74,14 @@ class SlotLimit(Base):
     limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     
+
+class InterviewRegistration(Base):
+    __tablename__ = "interview_registrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    faculty_id: Mapped[int] = mapped_column(ForeignKey("faculties.id"), nullable=False)
+    date: Mapped[str] = mapped_column(String(20), nullable=False)
+    time_slot: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    canceled: Mapped[bool] = mapped_column(Boolean, default=False)
