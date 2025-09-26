@@ -1,45 +1,3 @@
-# --- Обработчик отмены записи кандидата ---
-@dp.callback_query(F.data == "cancel_interview")
-async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
-    tg_id = str(callback.from_user.id)
-    async for session in get_session():
-        user = await session.scalar(select(User).where(User.tg_id == tg_id))
-        if not user or not user.is_candidate:
-            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
-            return
-        reg = await session.scalar(
-            select(InterviewRegistration).where(
-                InterviewRegistration.user_id == user.id,
-                InterviewRegistration.canceled == False
-            )
-        )
-        if not reg:
-            await callback.message.edit_text("У вас нет активной записи.")
-            return
-        # Отменяем запись
-        reg.canceled = True
-        # Возвращаем лимит
-        slot_limit = await session.scalar(
-            select(SlotLimit).where(
-                SlotLimit.faculty_id == reg.faculty_id,
-                SlotLimit.date == reg.date,
-                SlotLimit.time_slot == reg.time_slot
-            )
-        )
-        if slot_limit:
-            slot_limit.limit += 1
-        await session.commit()
-        # Показываем меню кандидата
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
-            ]
-        )
-        await callback.message.edit_text("Ваша запись отменена. Меню кандидата:", reply_markup=kb)
-        await state.clear()
-
-# --- Обработчик кнопки 'Назад' на этапе выбора времени ---
-
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import os
@@ -389,6 +347,48 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
         await callback.message.edit_text(f"Выберите время для {date}:", reply_markup=kb)
         await state.update_data(date=date)
         await state.set_state(InterviewFSM.choosing_time)
+
+
+@dp.callback_query(F.data == "cancel_interview")
+async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        user = await session.scalar(select(User).where(User.tg_id == tg_id))
+        if not user or not user.is_candidate:
+            await callback.message.edit_text("Вы не зарегистрированы как кандидат.")
+            return
+        reg = await session.scalar(
+            select(InterviewRegistration).where(
+                InterviewRegistration.user_id == user.id,
+                InterviewRegistration.canceled == False
+            )
+        )
+        if not reg:
+            await callback.message.edit_text("У вас нет активной записи.")
+            return
+        # Отменяем запись
+        reg.canceled = True
+        # Возвращаем лимит
+        slot_limit = await session.scalar(
+            select(SlotLimit).where(
+                SlotLimit.faculty_id == reg.faculty_id,
+                SlotLimit.date == reg.date,
+                SlotLimit.time_slot == reg.time_slot
+            )
+        )
+        if slot_limit:
+            slot_limit.limit += 1
+        await session.commit()
+        # Показываем меню кандидата
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
+            ]
+        )
+        await callback.message.edit_text("Ваша запись отменена. Меню кандидата:", reply_markup=kb)
+        await state.clear()
+
+
 
 
 @dp.message(Command("role"))
