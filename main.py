@@ -78,22 +78,16 @@ async def vk_yes_callback(call: CallbackQuery):
         if not candidate:
             await call.message.answer("Ошибка: кандидат не найден.")
             return
-        # Обновляем или создаём пользователя
-        user = await session.scalar(select(User).where(User.vk_id == candidate.vk_id))
-        if user:
-            user.tg_id = str(call.from_user.id)
-            user.first_name = candidate.first_name
-            user.last_name = candidate.last_name
-            user.faculty_id = candidate.faculty_id
-        else:
+        # Проверяем, есть ли уже пользователь с этим tg_id
+        user = await session.scalar(select(User).where(User.tg_id == str(call.from_user.id)))
+        if not user:
             session.add(User(
-                vk_id=candidate.vk_id,
                 tg_id=str(call.from_user.id),
                 first_name=candidate.first_name,
                 last_name=candidate.last_name,
                 faculty_id=candidate.faculty_id
             ))
-        await session.commit()
+            await session.commit()
     await call.message.answer("Вы успешно зарегистрированы!")
     await call.message.edit_reply_markup()
 
