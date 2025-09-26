@@ -243,6 +243,13 @@ async def register_interview_choose_time(callback: CallbackQuery, state: FSMCont
                     time_slots.append(ts)
             except Exception:
                 continue
+        # Отправляем картинку перед выбором времени
+        IMAGE_PATH = "zhim.png"  # имя файла картинки в корне проекта
+        try:
+            with open(IMAGE_PATH, "rb") as photo:
+                await callback.message.answer_photo(photo)
+        except Exception:
+            pass
         if not time_slots:
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
