@@ -865,6 +865,11 @@ async def parse_availability(message: Message):
             if not faculty.google_sheet_url:
                 await message.answer("У факультета не указана ссылка на Google-таблицу.")
                 return
+            # Удаляем старую занятость для факультета
+            await session.execute(
+                Availability.__table__.delete().where(Availability.faculty_id == faculty.id)
+            )
+            await session.commit()
             gc = gspread.service_account(filename="credentials.json")
             sh = gc.open_by_url(faculty.google_sheet_url)
             exclude = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры"}
@@ -1057,15 +1062,65 @@ async def slot_time_callback(callback: CallbackQuery):
         current_slots = slot_limit if slot_limit is not None else 0
         kb = InlineKeyboardMarkup(inline_keyboard=[
             *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
+            [InlineKeyboardButton(text="Добавить", callback_data=f"slot_add:{date}:{time_slot}")],
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_date:{date}")]
         ])
         text = (
             f"<b>{date} — {time_slot}</b>\n\n"
             f"<b>Доступные люди:</b>\n{user_list}\n\n"
             f"<b>Максимальное количество слотов для записи:</b> <b>{current_slots}</b>\n\n"
-            f"Выберите лимит с помощью кнопок ниже."
+            f"Выберите лимит с помощью кнопок ниже или добавьте дополнительные места."
         )
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+# --- Добавление слотов: обработка кнопки 'Добавить' ---
+@dp.callback_query(F.data.startswith("slot_add:"))
+async def slot_add_callback(callback: CallbackQuery):
+    _, date, time_slot = callback.data.split(":", 2)
+    # Показываем выбор количества для добавления
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        *[[InlineKeyboardButton(text=str(i), callback_data=f"slot_add_count:{date}:{time_slot}:{i}")] for i in range(0, 11)],
+        [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+    ])
+    await callback.message.edit_text(f"Сколько мест добавить к {date} {time_slot}?", reply_markup=kb)
+
+# --- Обработка выбора количества для добавления ---
+@dp.callback_query(F.data.startswith("slot_add_count:"))
+async def slot_add_count_callback(callback: CallbackQuery):
+    _, date, time_slot, add_count = callback.data.split(":", 3)
+    add_count = int(add_count)
+    tg_id = str(callback.from_user.id)
+    async for session in get_session():
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Получаем текущий лимит
+        slot_limit_obj = await session.scalar(
+            select(SlotLimit).where(
+                SlotLimit.faculty_id == faculty.id,
+                SlotLimit.date == date,
+                SlotLimit.time_slot == time_slot
+            )
+        )
+        if slot_limit_obj:
+            slot_limit_obj.limit += add_count
+        else:
+            # Если нет — создаём
+            slot_limit_obj = SlotLimit(
+                faculty_id=faculty.id,
+                date=date,
+                time_slot=time_slot,
+                limit=add_count
+            )
+            session.add(slot_limit_obj)
+        await session.commit()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
+        ])
+        await callback.message.edit_text(f"Добавлено {add_count} мест к {date} {time_slot}.", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("slot_count:"))
 async def slot_count_callback(callback: CallbackQuery):
@@ -1098,6 +1153,47 @@ async def slot_count_callback(callback: CallbackQuery):
             [InlineKeyboardButton(text="Назад", callback_data=f"slot_time:{date}:{time_slot}")]
         ])
         await callback.message.edit_text(f"Лимит слотов на {date} {time_slot} установлен: {count}", reply_markup=kb)
+
+
+# --- Команда для админа: получить все записи кандидатов по дням ---
+@dp.message(Command("get_zapis"))
+async def get_zapis(message: types.Message):
+    tg_id = str(message.from_user.id)
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        admin, faculty = row
+        # Получаем все записи по факультету
+        result_regs = await session.execute(
+            select(InterviewRegistration, User)
+            .join(User, User.id == InterviewRegistration.user_id)
+            .where(InterviewRegistration.faculty_id == faculty.id, InterviewRegistration.canceled == False)
+            .order_by(InterviewRegistration.date, InterviewRegistration.time_slot)
+        )
+        rows = result_regs.all()
+        if not rows:
+            await message.answer("Нет записей на собеседования.")
+            return
+        # Группируем по дате
+        from collections import defaultdict
+        zapis_by_date = defaultdict(list)
+        for reg, user in rows:
+            zapis_by_date[reg.date].append((reg.time_slot, user.first_name, user.last_name))
+        # Формируем сообщения по дням
+        for date, zapis in sorted(zapis_by_date.items()):
+            zapis.sort()
+            text = f"<b>{date}</b>\n"
+            for time_slot, first_name, last_name in zapis:
+                text += f"<b>{time_slot}</b>: {first_name} {last_name}\n"
+            await message.answer(text, parse_mode="HTML")
+
+
+
+
 
 async def main():
 	await dp.start_polling(bot)
