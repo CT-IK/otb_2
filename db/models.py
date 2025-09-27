@@ -86,3 +86,10 @@ class InterviewRegistration(Base):
     time_slot: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     canceled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+class FacultyTimeDelta(Base):
+    __tablename__ = "faculty_time_deltas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    faculty_id: Mapped[int] = mapped_column(ForeignKey("faculties.id"), nullable=False, unique=True)
+    hours_before_interview: Mapped[int] = mapped_column(Integer, nullable=False, default=4)

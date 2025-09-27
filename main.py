@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 import asyncio
 from db.engine import get_session
-from db.models import User, Faculty, Candidate, Availability, SlotLimit, InterviewRegistration
+from db.models import User, Faculty, Candidate, Availability, SlotLimit, InterviewRegistration, FacultyTimeDelta
 from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 from dotenv import load_dotenv
@@ -33,6 +33,16 @@ async def get_redis():
         redis_client = redis.from_url("redis://redis:6379", encoding="utf-8", decode_responses=True)
     return redis_client
 
+async def get_faculty_time_delta(session, faculty_id):
+    """Получает время блокировки слотов для факультета"""
+    result = await session.execute(
+        select(FacultyTimeDelta.hours_before_interview).where(
+            FacultyTimeDelta.faculty_id == faculty_id
+        )
+    )
+    hours = result.scalar()
+    return hours if hours is not None else 4  # По умолчанию 4 часа
+
 
 class VKAuth(StatesGroup):
     waiting_vk_id = State()
@@ -40,6 +50,9 @@ class VKAuth(StatesGroup):
 class InterviewFSM(StatesGroup):
     choosing_date = State()
     choosing_time = State()
+
+class CancelFSM(StatesGroup):
+    waiting_reason = State()
 
 
 # --- VK ID: старт, подтверждение, отказ ---
@@ -169,7 +182,10 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
                 SlotLimit.limit > 0
             ).distinct()
         )
-        # Фильтруем даты: только те, до которых больше 4 часов (день в день)
+        # Получаем время блокировки для факультета
+        hours_delta = await get_faculty_time_delta(session, faculty_id)
+        
+        # Фильтруем даты: только те, до которых больше установленного времени
         dates = []
         for r in result.all():
             try:
@@ -180,8 +196,8 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
                     slot_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
                 else:
                     slot_dt = datetime.datetime.fromisoformat(slot_date)
-                # Если дата сегодня или позже, и до неё больше 4 часов
-                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=4)):
+                # Если дата сегодня или позже, и до неё больше установленного времени
+                if slot_dt.date() > now.date() or (slot_dt.date() == now.date() and (slot_dt - now) >= datetime.timedelta(hours=hours_delta)):
                     dates.append(slot_date)
             except Exception:
                 continue
@@ -332,11 +348,15 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
         slot_limit.limit -= 1
         await session.commit()
 
+        # Получаем время блокировки для предупреждения
+        hours_delta = await get_faculty_time_delta(session, faculty_id)
+
         # Сообщаем пользователю сразу, не дожидаясь Google Sheets
         text = (
             f"<b>Вы успешно записаны на собеседование!</b>\n"
             f"\n<b>Дата:</b> {date}"
-            f"\n<b>Время:</b> {time_slot}"
+            f"\n<b>Время:</b> {time_slot}\n"
+            f"\n⚠️ <b>Важно:</b> Отменить запись можно только за {hours_delta} часов до начала собеседования!"
         )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -526,6 +546,7 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
             )
         )
         time_slots = []
+        now = datetime.datetime.now()
         for r in result.all():
             try:
                 slot_time = r[0]
@@ -559,7 +580,7 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
 
 
 
-# --- Отмена записи: удаление из базы и возврат лимита ---
+# --- Отмена записи: проверка времени и система причин ---
 @dp.callback_query(F.data == "cancel_interview")
 async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
     tg_id = str(callback.from_user.id)
@@ -577,8 +598,136 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
         if not reg:
             await callback.message.edit_text("У вас нет активной записи.")
             return
-        # Удаляем запись полностью
+        
+        # Проверяем время до собеседования
+        now = datetime.datetime.now()
+        try:
+            if len(reg.date) >= 5 and reg.date[2] == '.':
+                day, month = reg.date[:2], reg.date[3:5]
+                year = str(now.year)
+                interview_dt = datetime.datetime.strptime(f"{day}.{month}.{year}", "%d.%m.%Y")
+            else:
+                interview_dt = datetime.datetime.fromisoformat(reg.date)
+            
+            # Парсим время начала собеседования
+            if '-' in reg.time_slot:
+                start_time = reg.time_slot.split('-')[0].strip()
+                interview_dt = interview_dt.replace(hour=int(start_time[:2]), minute=int(start_time[3:5]))
+            
+            # Получаем время блокировки для факультета
+            hours_delta = await get_faculty_time_delta(session, reg.faculty_id)
+            
+            # Проверяем, можно ли отменить
+            time_until_interview = interview_dt - now
+            if time_until_interview <= datetime.timedelta(hours=hours_delta):
+                await callback.message.edit_text(
+                    f"❌ <b>Отмена невозможна!</b>\n\n"
+                    f"До собеседования осталось менее {hours_delta} часов.\n"
+                    f"Отменить запись можно только за {hours_delta} часов до начала.",
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Если можно отменить, запрашиваем причину
+            await callback.message.edit_text(
+                f"📝 <b>Укажите причину отмены записи:</b>\n\n"
+                f"<b>Дата:</b> {reg.date}\n"
+                f"<b>Время:</b> {reg.time_slot}\n\n"
+                f"Напишите причину отмены в следующем сообщении:",
+                parse_mode="HTML"
+            )
+            await state.set_state(CancelFSM.waiting_reason)
+            await state.update_data(registration_id=reg.id)
+            
+        except Exception as e:
+            await callback.message.edit_text("Ошибка при обработке времени собеседования.")
+            return
+
+# --- Обработка причины отмены ---
+@dp.message(CancelFSM.waiting_reason)
+async def cancel_reason_handler(message: types.Message, state: FSMContext):
+    reason = message.text.strip()
+    if not reason:
+        await message.answer("Пожалуйста, укажите причину отмены:")
+        return
+    
+    data = await state.get_data()
+    registration_id = data.get('registration_id')
+    
+    async for session in get_session():
+        # Получаем запись
+        reg = await session.scalar(
+            select(InterviewRegistration).where(InterviewRegistration.id == registration_id)
+        )
+        if not reg:
+            await message.answer("Запись не найдена.")
+            await state.clear()
+            return
+        
+        # Получаем админа факультета
+        admin = await session.scalar(
+            select(User).where(User.id == (await session.scalar(
+                select(Faculty.admin_id).where(Faculty.id == reg.faculty_id)
+            )))
+        )
+        
+        if not admin:
+            await message.answer("Администратор факультета не найден.")
+            await state.clear()
+            return
+        
+        # Отправляем админу запрос на отмену
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Разрешить отмену", callback_data=f"admin_approve_cancel:{registration_id}"),
+                InlineKeyboardButton(text="❌ Запретить отмену", callback_data=f"admin_reject_cancel:{registration_id}")
+            ]
+        ])
+        
+        admin_message = (
+            f"📋 <b>Запрос на отмену записи</b>\n\n"
+            f"<b>Кандидат:</b> {message.from_user.first_name} {message.from_user.last_name}\n"
+            f"<b>Дата:</b> {reg.date}\n"
+            f"<b>Время:</b> {reg.time_slot}\n"
+            f"<b>Причина:</b> {reason}\n\n"
+            f"Выберите действие:"
+        )
+        
+        try:
+            await bot.send_message(admin.tg_id, admin_message, reply_markup=kb, parse_mode="HTML")
+            await message.answer(
+                "✅ <b>Запрос на отмену отправлен администратору!</b>\n\n"
+                "Ожидайте решения. Вам придет уведомление о результате.",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await message.answer("Ошибка при отправке запроса администратору.")
+        
+        await state.clear()
+
+# --- Обработчики кнопок админа для отмены ---
+@dp.callback_query(F.data.startswith("admin_approve_cancel:"))
+async def admin_approve_cancel(callback: CallbackQuery):
+    registration_id = int(callback.data.split(":")[-1])
+    
+    async for session in get_session():
+        # Получаем запись
+        reg = await session.scalar(
+            select(InterviewRegistration).where(InterviewRegistration.id == registration_id)
+        )
+        if not reg:
+            await callback.message.edit_text("Запись не найдена.")
+            return
+        
+        # Получаем пользователя
+        user = await session.scalar(select(User).where(User.id == reg.user_id))
+        if not user:
+            await callback.message.edit_text("Пользователь не найден.")
+            return
+        
+        # Удаляем запись
         await session.delete(reg)
+        
         # Возвращаем лимит
         slot_limit = await session.scalar(
             select(SlotLimit).where(
@@ -589,41 +738,67 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
         )
         if slot_limit:
             slot_limit.limit += 1
+        
         await session.commit()
-        # --- Удаление из Google Sheet 'Записи' ---
+        
+        # Уведомляем кандидата
         try:
-            import gspread
-            import asyncio
-            faculty = await session.scalar(select(Faculty).where(Faculty.id == reg.faculty_id))
-            if faculty and faculty.google_sheet_url:
-                gc = gspread.service_account(filename="credentials.json")
-                sh = gc.open_by_url(faculty.google_sheet_url)
-                try:
-                    ws = sh.worksheet("Записи")
-                except Exception:
-                    ws = None
-                if ws:
-                    all_rows = ws.get_all_values()
-                    id_str = str(reg.user_id)
-                    to_delete = []
-                    for idx, row in enumerate(all_rows, 1):
-                        if row and row[0] == id_str:
-                            to_delete.append(idx)
-                    for idx in reversed(to_delete):
-                        ws.delete_rows(idx)
-                        await asyncio.sleep(5)
+            await bot.send_message(
+                user.tg_id,
+                f"✅ <b>Ваша запись отменена!</b>\n\n"
+                f"<b>Дата:</b> {reg.date}\n"
+                f"<b>Время:</b> {reg.time_slot}\n\n"
+                f"Теперь вы можете записаться на другое время.",
+                parse_mode="HTML"
+            )
         except Exception:
             pass
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Записаться на собеседование", callback_data="register_interview")]
-            ]
+        
+        # Уведомляем админа
+        await callback.message.edit_text(
+            f"✅ <b>Отмена разрешена!</b>\n\n"
+            f"Кандидат {user.first_name} {user.last_name} уведомлен об отмене записи.",
+            parse_mode="HTML"
         )
-        await callback.message.edit_text("Ваша запись отменена. Меню кандидата:", reply_markup=kb)
-        await state.clear()
 
-
-
+@dp.callback_query(F.data.startswith("admin_reject_cancel:"))
+async def admin_reject_cancel(callback: CallbackQuery):
+    registration_id = int(callback.data.split(":")[-1])
+    
+    async for session in get_session():
+        # Получаем запись
+        reg = await session.scalar(
+            select(InterviewRegistration).where(InterviewRegistration.id == registration_id)
+        )
+        if not reg:
+            await callback.message.edit_text("Запись не найдена.")
+            return
+        
+        # Получаем пользователя
+        user = await session.scalar(select(User).where(User.id == reg.user_id))
+        if not user:
+            await callback.message.edit_text("Пользователь не найден.")
+            return
+        
+        # Уведомляем кандидата
+        try:
+            await bot.send_message(
+                user.tg_id,
+                f"❌ <b>Отмена записи отклонена</b>\n\n"
+                f"<b>Дата:</b> {reg.date}\n"
+                f"<b>Время:</b> {reg.time_slot}\n\n"
+                f"Ваша запись остается активной.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        
+        # Уведомляем админа
+        await callback.message.edit_text(
+            f"❌ <b>Отмена запрещена!</b>\n\n"
+            f"Кандидат {user.first_name} {user.last_name} уведомлен об отклонении отмены.",
+            parse_mode="HTML"
+        )
 
 @dp.message(Command("role"))
 async def get_role(message: Message):
@@ -1402,7 +1577,7 @@ async def get_fucking_stats(message: types.Message):
                                         sheets_slots += 1
                             
                             # Задержка между запросами для избежания rate limiting
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(2.0)
                             
                         except Exception as e:
                             continue
@@ -1436,7 +1611,7 @@ async def get_fucking_stats(message: types.Message):
                 total_stats['faculty_details'].append(faculty_stats)
                 
                 # Задержка между факультетами
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
             
             # Формируем отчет
             report = "📊 <b>ГЛОБАЛЬНАЯ ДИАГНОСТИКА ФАКУЛЬТЕТОВ</b>\n\n"
@@ -1564,13 +1739,13 @@ async def recover_missing_data(message: types.Message):
                                             recovered_count += 1
                             
                             # Задержка между запросами
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(2.0)
                             
                         except Exception as e:
                             continue
                     
                     # Задержка между факультетами
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(5)
                     
                 except Exception as e:
                     errors.append(f"{faculty.name}: {str(e)}")
@@ -1595,6 +1770,142 @@ async def recover_missing_data(message: types.Message):
         import traceback
         tb = traceback.format_exc()
         await message.answer(f"❌ Ошибка при восстановлении:\n<pre>{e}\n{tb[-1000:]}</pre>")
+
+# --- Команда настройки времени блокировки слотов ---
+@dp.message(Command("create_time_delta"))
+async def create_time_delta(message: types.Message):
+    tg_id = str(message.from_user.id)
+    
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+            return
+        
+        admin, faculty = row
+        
+        # Получаем текущее значение времени блокировки
+        current_delta = await get_faculty_time_delta(session, faculty.id)
+        
+        # Создаем клавиатуру с вариантами времени
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            *[[InlineKeyboardButton(text=f"{i} часов", callback_data=f"set_delta:{i}")] for i in range(1, 25)],
+            [InlineKeyboardButton(text="Назад", callback_data="delta_back")]
+        ])
+        
+        await message.answer(
+            f"⏰ <b>Настройка времени блокировки слотов</b>\n\n"
+            f"<b>Факультет:</b> {faculty.name}\n"
+            f"<b>Текущее значение:</b> {current_delta} часов\n\n"
+            f"Выберите новое время блокировки (за сколько часов до собеседования нельзя записаться/отменить):",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+
+@dp.callback_query(F.data.startswith("set_delta:"))
+async def set_time_delta(callback: CallbackQuery):
+    hours = int(callback.data.split(":")[-1])
+    tg_id = str(callback.from_user.id)
+    
+    async for session in get_session():
+        # Проверяем, что пользователь — админ факультета
+        result = await session.execute(select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id))
+        row = result.first()
+        if not row:
+            await callback.message.edit_text("Вы не являетесь админом факультета.")
+            return
+        
+        admin, faculty = row
+        
+        # Обновляем или создаем запись времени блокировки
+        stmt = insert(FacultyTimeDelta).values(
+            faculty_id=faculty.id,
+            hours_before_interview=hours
+        ).on_conflict_do_update(
+            index_elements=[FacultyTimeDelta.faculty_id],
+            set_={"hours_before_interview": hours}
+        )
+        await session.execute(stmt)
+        await session.commit()
+        
+        await callback.message.edit_text(
+            f"✅ <b>Время блокировки обновлено!</b>\n\n"
+            f"<b>Факультет:</b> {faculty.name}\n"
+            f"<b>Новое значение:</b> {hours} часов\n\n"
+            f"Теперь кандидаты не смогут записаться или отменить запись за {hours} часов до начала собеседования.",
+            parse_mode="HTML"
+        )
+
+# --- Команда для отладки доступности собеседующих ---
+@dp.message(Command("debug_availability"))
+async def debug_availability(message: types.Message):
+    tg_id = str(message.from_user.id)
+    
+    # Проверяем доступ - только для конкретного пользователя
+    if tg_id != "922109605":
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    await message.answer("🔍 Начинаю отладку доступности собеседующих...")
+    
+    try:
+        async for session in get_session():
+            # Получаем все факультеты
+            result_faculties = await session.execute(select(Faculty))
+            faculties = result_faculties.scalars().all()
+            
+            for faculty in faculties:
+                if not faculty.google_sheet_url:
+                    continue
+                
+                await message.answer(f"🏛️ <b>Факультет: {faculty.name}</b>", parse_mode="HTML")
+                
+                # Получаем всех собеседующих факультета
+                result_sobesers = await session.execute(
+                    select(User).where(
+                        User.is_sobeser == True,
+                        User.faculty_id == faculty.id
+                    )
+                )
+                all_sobesers = result_sobesers.scalars().all()
+                
+                await message.answer(f"📋 Всего собеседующих: {len(all_sobesers)}")
+                
+                # Проверяем доступность для каждого собеседующего
+                for sobeser in all_sobesers:
+                    result_availability = await session.execute(
+                        select(Availability).where(
+                            Availability.user_id == sobeser.id,
+                            Availability.faculty_id == faculty.id,
+                            Availability.is_available == True
+                        )
+                    )
+                    availabilities = result_availability.scalars().all()
+                    
+                    if availabilities:
+                        dates_times = []
+                        for avail in availabilities:
+                            dates_times.append(f"{avail.date} {avail.time_slot}")
+                        
+                        await message.answer(
+                            f"👤 <b>{sobeser.first_name} {sobeser.last_name}</b>\n"
+                            f"Доступен в: {', '.join(dates_times[:5])}{'...' if len(dates_times) > 5 else ''}",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await message.answer(
+                            f"👤 <b>{sobeser.first_name} {sobeser.last_name}</b> - НЕТ ДОСТУПНОСТИ",
+                            parse_mode="HTML"
+                        )
+                
+                await asyncio.sleep(1)  # Задержка между факультетами
+                
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await message.answer(f"❌ Ошибка при отладке:\n<pre>{e}\n{tb[-1000:]}</pre>")
 
 
 
