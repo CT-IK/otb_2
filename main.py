@@ -1312,6 +1312,291 @@ async def get_zapis(message: types.Message):
             await message.answer(text, parse_mode="HTML")
 
 
+# --- Глобальная диагностика всех факультетов ---
+@dp.message(Command("get_fucking_stats"))
+async def get_fucking_stats(message: types.Message):
+    tg_id = str(message.from_user.id)
+    
+    # Проверяем доступ - только для конкретного пользователя
+    if tg_id != "922109605":
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    await message.answer("🔍 Начинаю глобальную диагностику всех факультетов...")
+    
+    try:
+        async for session in get_session():
+            # Получаем все факультеты
+            result_faculties = await session.execute(select(Faculty))
+            faculties = result_faculties.scalars().all()
+            
+            if not faculties:
+                await message.answer("❌ Факультеты не найдены в базе данных.")
+                return
+            
+            total_stats = {
+                'faculties_checked': 0,
+                'total_sheets_checked': 0,
+                'total_slots_found': 0,
+                'total_slots_in_db': 0,
+                'total_missing_slots': 0,
+                'faculty_details': []
+            }
+            
+            # Исключаемые листы
+            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            
+            for faculty in faculties:
+                if not faculty.google_sheet_url:
+                    continue
+                    
+                faculty_stats = {
+                    'faculty_name': faculty.name,
+                    'faculty_id': faculty.id,
+                    'sheets_checked': 0,
+                    'slots_found': 0,
+                    'slots_in_db': 0,
+                    'missing_slots': 0,
+                    'error': None
+                }
+                
+                try:
+                    # Подключаемся к Google Sheets
+                    gc = gspread.service_account(filename="credentials.json")
+                    sh = gc.open_by_url(faculty.google_sheet_url)
+                    
+                    # Получаем все листы
+                    worksheets = sh.worksheets()
+                    faculty_stats['total_sheets'] = len(worksheets)
+                    
+                    # Фильтруем листы (исключаем служебные)
+                    user_sheets = [ws for ws in worksheets if ws.title not in excluded_sheets]
+                    faculty_stats['sheets_checked'] = len(user_sheets)
+                    
+                    # Считаем слоты в Google Sheets
+                    sheets_slots = 0
+                    for ws in user_sheets:
+                        try:
+                            # Парсим лист доступности
+                            user_id_cell = ws.acell("A15").value
+                            if not user_id_cell:
+                                continue
+                                
+                            # Даты в A1:I1 (включая A1)
+                            date_cells = ws.range("A1:I1")
+                            date_values = [cell.value for cell in date_cells if cell.value]
+                            
+                            # Временные интервалы в A2:A13 (12 строк)
+                            time_cells = ws.range("A2:A13")
+                            time_values = [cell.value for cell in time_cells if cell.value]
+                            
+                            # Парсим диапазон A2:I13 (9 столбцов x 12 строк)
+                            grid = ws.range("A2:I13")
+                            for i, cell in enumerate(grid):
+                                row = i // 9  # 0..11 (12 строк)
+                                col = i % 9   # 0..8 (9 столбцов)
+                                
+                                if row < len(time_values) and col < len(date_values):
+                                    value = cell.value.strip().lower() if cell.value else ""
+                                    if value == "могу":
+                                        sheets_slots += 1
+                            
+                            # Задержка между запросами для избежания rate limiting
+                            await asyncio.sleep(0.5)
+                            
+                        except Exception as e:
+                            continue
+                    
+                    faculty_stats['slots_found'] = sheets_slots
+                    
+                    # Считаем слоты в базе данных для этого факультета
+                    result_db_slots = await session.execute(
+                        select(func.count(Availability.id)).where(
+                            Availability.faculty_id == faculty.id,
+                            Availability.is_available == True
+                        )
+                    )
+                    db_slots = result_db_slots.scalar() or 0
+                    faculty_stats['slots_in_db'] = db_slots
+                    
+                    # Вычисляем потерянные слоты
+                    missing_slots = max(0, sheets_slots - db_slots)
+                    faculty_stats['missing_slots'] = missing_slots
+                    
+                    # Обновляем общую статистику
+                    total_stats['faculties_checked'] += 1
+                    total_stats['total_sheets_checked'] += faculty_stats['sheets_checked']
+                    total_stats['total_slots_found'] += sheets_slots
+                    total_stats['total_slots_in_db'] += db_slots
+                    total_stats['total_missing_slots'] += missing_slots
+                    
+                except Exception as e:
+                    faculty_stats['error'] = str(e)
+                
+                total_stats['faculty_details'].append(faculty_stats)
+                
+                # Задержка между факультетами
+                await asyncio.sleep(1)
+            
+            # Формируем отчет
+            report = "📊 <b>ГЛОБАЛЬНАЯ ДИАГНОСТИКА ФАКУЛЬТЕТОВ</b>\n\n"
+            
+            # Общая статистика
+            report += f"🏛️ <b>Факультетов проверено:</b> {total_stats['faculties_checked']}\n"
+            report += f"📋 <b>Листов проверено:</b> {total_stats['total_sheets_checked']}\n"
+            report += f"✅ <b>Слотов найдено в Google Sheets:</b> {total_stats['total_slots_found']}\n"
+            report += f"💾 <b>Слотов в базе данных:</b> {total_stats['total_slots_in_db']}\n"
+            report += f"❌ <b>Потерянных слотов:</b> {total_stats['total_missing_slots']}\n\n"
+            
+            # Детали по факультетам
+            report += "<b>📋 ДЕТАЛИ ПО ФАКУЛЬТЕТАМ:</b>\n"
+            for detail in total_stats['faculty_details']:
+                if detail['error']:
+                    report += f"\n❌ <b>{detail['faculty_name']}</b> - ОШИБКА: {detail['error']}"
+                else:
+                    report += f"\n🏛️ <b>{detail['faculty_name']}</b>\n"
+                    report += f"   📋 Листов: {detail['sheets_checked']}\n"
+                    report += f"   ✅ В Google Sheets: {detail['slots_found']}\n"
+                    report += f"   💾 В БД: {detail['slots_in_db']}\n"
+                    report += f"   ❌ Потеряно: {detail['missing_slots']}"
+            
+            # Отправляем отчет
+            if len(report) > 4000:
+                # Разбиваем на части если сообщение слишком длинное
+                parts = [report[i:i+4000] for i in range(0, len(report), 4000)]
+                for part in parts:
+                    await message.answer(part, parse_mode="HTML")
+            else:
+                await message.answer(report, parse_mode="HTML")
+                
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await message.answer(f"❌ Ошибка при диагностике:\n<pre>{e}\n{tb[-1000:]}</pre>")
+
+
+# --- Команда восстановления потерянных данных ---
+@dp.message(Command("recover_missing_data"))
+async def recover_missing_data(message: types.Message):
+    tg_id = str(message.from_user.id)
+    
+    # Проверяем доступ - только для конкретного пользователя
+    if tg_id != "922109605":
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    await message.answer("🔄 Начинаю восстановление потерянных данных...")
+    
+    try:
+        async for session in get_session():
+            # Получаем все факультеты
+            result_faculties = await session.execute(select(Faculty))
+            faculties = result_faculties.scalars().all()
+            
+            recovered_count = 0
+            errors = []
+            
+            # Исключаемые листы
+            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            
+            for faculty in faculties:
+                if not faculty.google_sheet_url:
+                    continue
+                    
+                try:
+                    # Подключаемся к Google Sheets
+                    gc = gspread.service_account(filename="credentials.json")
+                    sh = gc.open_by_url(faculty.google_sheet_url)
+                    
+                    # Получаем все листы
+                    worksheets = sh.worksheets()
+                    user_sheets = [ws for ws in worksheets if ws.title not in excluded_sheets]
+                    
+                    for ws in user_sheets:
+                        try:
+                            # Парсим лист доступности
+                            user_id_cell = ws.acell("A15").value
+                            if not user_id_cell:
+                                continue
+                                
+                            user_id = int(user_id_cell)
+                            
+                            # Даты в A1:I1 (включая A1)
+                            date_cells = ws.range("A1:I1")
+                            date_values = [cell.value for cell in date_cells if cell.value]
+                            
+                            # Временные интервалы в A2:A13 (12 строк)
+                            time_cells = ws.range("A2:A13")
+                            time_values = [cell.value for cell in time_cells if cell.value]
+                            
+                            # Парсим диапазон A2:I13 (9 столбцов x 12 строк)
+                            grid = ws.range("A2:I13")
+                            for i, cell in enumerate(grid):
+                                row = i // 9  # 0..11 (12 строк)
+                                col = i % 9   # 0..8 (9 столбцов)
+                                
+                                if row < len(time_values) and col < len(date_values):
+                                    value = cell.value.strip().lower() if cell.value else ""
+                                    if value == "могу":
+                                        date = date_values[col]
+                                        time_slot = time_values[row]
+                                        
+                                        # Проверяем, есть ли уже такая запись в БД
+                                        existing = await session.scalar(
+                                            select(Availability).where(
+                                                Availability.user_id == user_id,
+                                                Availability.faculty_id == faculty.id,
+                                                Availability.date == date,
+                                                Availability.time_slot == time_slot
+                                            )
+                                        )
+                                        
+                                        if not existing:
+                                            # Добавляем недостающую запись
+                                            new_availability = Availability(
+                                                user_id=user_id,
+                                                faculty_id=faculty.id,
+                                                date=date,
+                                                time_slot=time_slot,
+                                                is_available=True
+                                            )
+                                            session.add(new_availability)
+                                            recovered_count += 1
+                            
+                            # Задержка между запросами
+                            await asyncio.sleep(0.5)
+                            
+                        except Exception as e:
+                            continue
+                    
+                    # Задержка между факультетами
+                    await asyncio.sleep(1)
+                    
+                except Exception as e:
+                    errors.append(f"{faculty.name}: {str(e)}")
+            
+            # Сохраняем изменения
+            await session.commit()
+            
+            # Отправляем результат
+            result_msg = f"✅ <b>Восстановление завершено!</b>\n\n"
+            result_msg += f"🔄 <b>Восстановлено записей:</b> {recovered_count}\n"
+            
+            if errors:
+                result_msg += f"\n❌ <b>Ошибки:</b>\n"
+                for error in errors[:5]:  # Показываем только первые 5 ошибок
+                    result_msg += f"• {error}\n"
+                if len(errors) > 5:
+                    result_msg += f"... и еще {len(errors) - 5} ошибок"
+            
+            await message.answer(result_msg, parse_mode="HTML")
+                
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await message.answer(f"❌ Ошибка при восстановлении:\n<pre>{e}\n{tb[-1000:]}</pre>")
+
+
 
 
 
