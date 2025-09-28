@@ -421,7 +421,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                         str(user_id),
                         f"{first_name} {last_name}",
                         date,
-                        time_slot
+                        time_slot,
                         "", "", "", ""
                     ]
                     ws.append_row(row)
