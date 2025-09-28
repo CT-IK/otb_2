@@ -218,6 +218,7 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
         )
         await callback.message.edit_text("Выберите дату для собеседования:", reply_markup=kb)
         await state.set_state(InterviewFSM.choosing_date)
+
 # --- Обработчик кнопки 'Назад' на этапе выбора даты ---
 @dp.callback_query(InterviewFSM.choosing_date, F.data == "reg_back_to_menu")
 async def register_interview_back_to_menu(callback: CallbackQuery, state: FSMContext):
@@ -419,6 +420,8 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                     row = [
                         str(user_id),
                         f"{first_name} {last_name}",
+                        date,
+                        time_slot
                         "", "", "", ""
                     ]
                     ws.append_row(row)
