@@ -428,23 +428,23 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                     logging.info(f"[GSHEET] Добавлена строка: {row}")
                     await asyncio.sleep(5)
                     row_num = len(all_rows) - len(to_delete) + 1
-                    # Добавляем dropdown для 3 и 4 столбца (только те, кто может)
+                    # Добавляем dropdown для E и F (только те, кто может)
                     if avail_names:
                         rule_avail = DataValidationRule(
                             BooleanCondition('ONE_OF_LIST', avail_names),
                             showCustomUi=True
                         )
-                        set_data_validation_for_cell_range(ws, f"C{row_num}:D{row_num}", rule_avail)
-                        logging.info(f"[GSHEET] Добавлен dropdown для C{row_num}:D{row_num} — {avail_names}")
+                        set_data_validation_for_cell_range(ws, f"E{row_num}:F{row_num}", rule_avail)
+                        logging.info(f"[GSHEET] Добавлен dropdown для E{row_num}:F{row_num} — {avail_names}")
                         await asyncio.sleep(5)
-                    # Для 5 и 6 столбца — все собесеры факультета
+                    # Для G и H — все собесеры факультета
                     if all_sobesers_names:
                         rule_all = DataValidationRule(
                             BooleanCondition('ONE_OF_LIST', all_sobesers_names),
                             showCustomUi=True
                         )
-                        set_data_validation_for_cell_range(ws, f"E{row_num}:F{row_num}", rule_all)
-                        logging.info(f"[GSHEET] Добавлен dropdown для E{row_num}:F{row_num} — {all_sobesers_names}")
+                        set_data_validation_for_cell_range(ws, f"G{row_num}:H{row_num}", rule_all)
+                        logging.info(f"[GSHEET] Добавлен dropdown для G{row_num}:H{row_num} — {all_sobesers_names}")
                         await asyncio.sleep(5)
             except Exception as e:
                 import traceback
