@@ -1911,7 +1911,109 @@ async def debug_availability(message: types.Message):
         await message.answer(f"❌ Ошибка при отладке:\n<pre>{e}\n{tb[-1000:]}</pre>")
 
 
+@dp.message(Command("updatee_zapis"))
+async def updatee_zapis(message: Message):
+    tg_id = str(message.from_user.id)
+    await message.answer("Обновляю лист 'Записи' по всем текущим данным...")
+    try:
+        async for session in get_session():
+            # Проверяем, что пользователь — админ факультета
+            result = await session.execute(
+                select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id)
+            )
+            row = result.first()
+            if not row:
+                await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+                return
+            admin, faculty = row
+            if not faculty.google_sheet_url:
+                await message.answer("У факультета не указана ссылка на Google-таблицу.")
+                return
 
+            import gspread
+            from gspread_formatting import DataValidationRule, BooleanCondition, set_data_validation_for_cell_range
+            gc = gspread.service_account(filename="credentials.json")
+            sh = gc.open_by_url(faculty.google_sheet_url)
+
+            # Удаляем старый лист "Записи", если есть
+            try:
+                ws = sh.worksheet("Записи")
+                sh.del_worksheet(ws)
+                await asyncio.sleep(3)
+            except Exception:
+                pass
+
+            # Создаём новый лист "Записи"
+            ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
+            await asyncio.sleep(3)
+
+            # Заголовки
+            headers = ["ID", "Имя Фамилия", "Дата", "Время", "Собеседующий 1", "Собеседующий 2", "Любой собесер 1", "Любой собесер 2"]
+            ws.append_row(headers)
+            await asyncio.sleep(2)
+
+            # Получаем все записи на собеседования по факультету
+            result_regs = await session.execute(
+                select(InterviewRegistration, User)
+                .join(User, User.id == InterviewRegistration.user_id)
+                .where(InterviewRegistration.faculty_id == faculty.id, InterviewRegistration.canceled == False)
+                .order_by(InterviewRegistration.date, InterviewRegistration.time_slot)
+            )
+            rows = result_regs.all()
+
+            # Получаем всех собесеров факультета
+            result_all_sobesers = await session.execute(
+                select(User).where(User.is_sobeser == True, User.faculty_id == faculty.id)
+            )
+            all_sobesers = result_all_sobesers.scalars().all()
+            all_sobesers_names = [f"{s.first_name} {s.last_name}" for s in all_sobesers]
+
+            for idx, (reg, user) in enumerate(rows, start=2):
+                # Собесеры, которые могут в это время
+                result_avail = await session.execute(
+                    select(User).join(Availability, Availability.user_id == User.id).where(
+                        User.is_sobeser == True,
+                        User.faculty_id == faculty.id,
+                        Availability.date == reg.date,
+                        Availability.time_slot == reg.time_slot,
+                        Availability.is_available == True
+                    )
+                )
+                avail_sobesers = result_avail.scalars().all()
+                avail_names = [f"{s.first_name} {s.last_name}" for s in avail_sobesers]
+
+                row = [
+                    str(user.id),
+                    f"{user.first_name} {user.last_name}",
+                    reg.date,
+                    reg.time_slot,
+                    "", "", "", ""
+                ]
+                ws.append_row(row)
+                await asyncio.sleep(2)
+
+                # Дропдауны для E и F (только те, кто может)
+                if avail_names:
+                    rule_avail = DataValidationRule(
+                        BooleanCondition('ONE_OF_LIST', avail_names),
+                        showCustomUi=True
+                    )
+                    set_data_validation_for_cell_range(ws, f"E{idx}:F{idx}", rule_avail)
+                    await asyncio.sleep(2)
+                # Дропдауны для G и H — все собесеры факультета
+                if all_sobesers_names:
+                    rule_all = DataValidationRule(
+                        BooleanCondition('ONE_OF_LIST', all_sobesers_names),
+                        showCustomUi=True
+                    )
+                    set_data_validation_for_cell_range(ws, f"G{idx}:H{idx}", rule_all)
+                    await asyncio.sleep(2)
+
+            await message.answer(f"Лист 'Записи' успешно обновлён! Всего записей: {len(rows)}")
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await message.answer(f"Ошибка при обновлении листа:\n<pre>{e}\n{tb[-1500:]}</pre>")
 
 
 async def main():
