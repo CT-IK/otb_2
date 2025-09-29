@@ -2016,6 +2016,110 @@ async def updatee_zapis(message: Message):
         await message.answer(f"Ошибка при обновлении листа:\n<pre>{e}\n{tb[-1500:]}</pre>")
 
 
+
+@dp.message(Command("recover_missing_slots"))
+async def recover_missing_slots(message: Message):
+    tg_id = str(message.from_user.id)
+    await message.answer("🔄 Начинаю восстановление недостающих слотов...")
+    try:
+        async for session in get_session():
+            # Проверяем, что пользователь — админ факультета
+            result = await session.execute(
+                select(User, Faculty).join(Faculty, Faculty.admin_id == User.id).where(User.tg_id == tg_id)
+            )
+            row = result.first()
+            if not row:
+                await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
+                return
+            admin, faculty = row
+            if not faculty.google_sheet_url:
+                await message.answer("У факультета не указана ссылка на Google-таблицу.")
+                return
+
+            import gspread
+            gc = gspread.service_account(filename="credentials.json")
+            sh = gc.open_by_url(faculty.google_sheet_url)
+            exclude = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            sheets = [ws for ws in sh.worksheets() if ws.title not in exclude]
+
+            total_pages = len(sheets)
+            total_in_db = 0
+            total_missing = 0
+            total_added = 0
+
+            for ws in sheets:
+                try:
+                    user_id_cell = ws.acell("A15").value
+                    if not user_id_cell:
+                        await message.answer(f"⏩ Пропущен лист <b>{ws.title}</b>: нет ID в A15.")
+                        await asyncio.sleep(1)
+                        continue
+                    user_id = int(user_id_cell)
+                    # Получаем имя и фамилию пользователя
+                    user = await session.scalar(select(User).where(User.id == user_id))
+                    user_name = f"{user.first_name} {user.last_name}" if user else f"ID {user_id}"
+                    # Проверяем, есть ли хоть одна запись в availability для этого user_id и факультета
+                    exists = await session.scalar(
+                        select(Availability).where(
+                            Availability.user_id == user_id,
+                            Availability.faculty_id == faculty.id
+                        )
+                    )
+                    if exists:
+                        total_in_db += 1
+                        await message.answer(f"✅ <b>{user_name}</b> — уже есть в базе.")
+                        await asyncio.sleep(1)
+                        continue  # Уже есть, пропускаем
+                    # Парсим даты и интервалы
+                    date_cells = ws.range("B1:I1")
+                    date_values = [cell.value for cell in date_cells]
+                    time_cells = ws.range("A2:A13")
+                    time_values = [cell.value for cell in time_cells]
+                    grid = ws.range("B2:I13")
+                    added_for_page = 0
+                    for i, cell in enumerate(grid):
+                        row = i // 8
+                        col = i % 8
+                        value = cell.value.strip().lower()
+                        if value == "могу":
+                            date = date_values[col]
+                            time_slot = time_values[row]
+                            stmt = insert(Availability).values(
+                                user_id=user_id,
+                                faculty_id=faculty.id,
+                                date=date,
+                                time_slot=time_slot,
+                                is_available=True
+                            ).on_conflict_do_nothing()
+                            await session.execute(stmt)
+                            added_for_page += 1
+                    if added_for_page > 0:
+                        total_missing += 1
+                        total_added += added_for_page
+                        await message.answer(f"➕ <b>{user_name}</b>: добавлено <b>{added_for_page}</b> отметок 'могу'.")
+                    else:
+                        await message.answer(f"⚠️ <b>{user_name}</b>: не найдено новых отметок 'могу'.")
+                    await asyncio.sleep(3)
+                except Exception as e:
+                    await message.answer(f"❌ Ошибка на листе <b>{ws.title}</b>: {e}")
+                    await asyncio.sleep(2)
+                    continue
+            await session.commit()
+            await message.answer(
+                f"✅ Восстановление завершено!\n\n"
+                f"Всего страниц: <b>{total_pages}</b>\n"
+                f"Уже есть в базе: <b>{total_in_db}</b>\n"
+                f"Потеряно (не было в базе): <b>{total_missing}</b>\n"
+                f"Добавлено новых временных интервалов: <b>{total_added}</b>",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        await message.answer(f"Ошибка при восстановлении:\n<pre>{e}\n{tb[-1500:]}</pre>")
+
+
+
 async def main():
 	await dp.start_polling(bot)
 
