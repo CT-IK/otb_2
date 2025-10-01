@@ -1,12 +1,14 @@
-from datetime import date, time, timedelta
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+import asyncio
+from datetime import date, time
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 from db.models import Slot, Base
 import os 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Укажи свой URL подключения к PostgreSQL
+# Асинхронный URL (оставляем как есть)
 DATABASE_URL = os.getenv('DB_URL')
 
 dates = [
@@ -35,16 +37,31 @@ time_slots = [
     (time(21, 0), time(22, 0)),
 ]
 
-def main():
-    engine = create_engine(DATABASE_URL)
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
+async def main():
+    # Создаем асинхронный движок
+    engine = create_async_engine(DATABASE_URL)
+    
+    # Создаем таблицы
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    # Создаем асинхронную сессию
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    
+    async with async_session() as session:
+        # Добавляем слоты
         for d in dates:
             for start, end in time_slots:
                 slot = Slot(date=d, start_time=start, end_time=end)
                 session.add(slot)
-        session.commit()
-    print("Слоты успешно добавлены!")
+        
+        # Коммитим изменения
+        await session.commit()
+    
+    # Закрываем соединение
+    await engine.dispose()
+    
+    print("✅ Слоты успешно добавлены!")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
