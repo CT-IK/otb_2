@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 async def init_db_async():
     """Асинхронная инициализация БД с вашими настройками"""
     # Ваши настройки подключения
-    DB_USER = os.getenv("DB_USER", "zapis")
+    DB_USER = os.getenv("DB_USER", "zapis_user")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "zapis_pass")
     DB_HOST = os.getenv("DB_HOST", "postgres")
     DB_PORT = os.getenv("DB_PORT", "5432")
