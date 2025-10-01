@@ -7,11 +7,11 @@ from sqlalchemy.orm import sessionmaker
 async def init_db_async():
     """Асинхронная инициализация БД с правильными настройками из docker-compose"""
     # Правильные настройки из вашего docker-compose
-    DB_USER = os.getenv("DB_USER", "zapis_user")  # ← ИЗМЕНИТЕ НА zapis_user
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "zapis_pass")
-    DB_HOST = os.getenv("DB_HOST", "postgres")
-    DB_PORT = os.getenv("DB_PORT", "5432")
-    DB_NAME = os.getenv("DB_NAME", "zapis")
+    DB_USER = "zapis_user"
+    DB_PASSWORD = "zapis_pass"
+    DB_HOST = "postgres"
+    DB_PORT = "5432"
+    DB_NAME = "zapis"
     
     # Асинхронный URL для asyncpg
     DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -47,11 +47,11 @@ async def init_db_async():
 
 async def check_database_connection():
     """Проверка подключения к базе данных"""
-    DB_USER = os.getenv("DB_USER", "zapis_user")  # ← ИЗМЕНИТЕ НА zapis_user
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "zapis_pass")
-    DB_HOST = os.getenv("DB_HOST", "postgres")
-    DB_PORT = os.getenv("DB_PORT", "5432")
-    DB_NAME = os.getenv("DB_NAME", "zapis")
+    DB_USER = "zapis_user"
+    DB_PASSWORD = "zapis_pass"
+    DB_HOST = "postgres"
+    DB_PORT = "5432"
+    DB_NAME = "zapis"
     
     DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     
