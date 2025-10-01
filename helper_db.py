@@ -33,7 +33,7 @@ async def init_db_async():
         # Создаем все таблицы
         async with engine.begin() as conn:
             print("🗃️ Создаем таблицы...")
-            from models import Base
+            from db.models import Base
             await conn.run_sync(Base.metadata.create_all)
         
         print("✅ Все таблицы успешно созданы!")
@@ -83,7 +83,7 @@ async def create_sample_data_async():
     
     try:
         async with async_session() as session:
-            from models import Faculty, FacultyTimeDelta, User
+            from db.models import Faculty, FacultyTimeDelta, User
             
             print("📊 Добавляем тестовые данные...")
             
@@ -142,7 +142,7 @@ async def main():
     if not await check_database_connection():
         return
     
-    print("\n🗃️ Начинаем инициализацию таблиц...")
+    print("\nНачинаем инициализацию таблиц...")
     
     # Инициализируем базу данных
     success = await init_db_async()
