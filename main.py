@@ -165,7 +165,7 @@ async def candidate_menu(message: types.Message):
             )
             await message.answer("Меню кандидата:", reply_markup=kb)
 
-# --- Кнопка записи кандидата ---
+# --- Кнопка Записи_2_2 кандидата ---
 @dp.callback_query(F.data == "register_interview")
 async def register_interview_start_callback(callback: CallbackQuery, state: FSMContext):
     tg_id = str(callback.from_user.id)
@@ -207,7 +207,7 @@ async def register_interview_start_callback(callback: CallbackQuery, state: FSMC
                     [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_menu")]
                 ]
             )
-            await callback.message.edit_text("Нет доступных дат для записи.", reply_markup=kb)
+            await callback.message.edit_text("Нет доступных дат для Записи_2.", reply_markup=kb)
             return
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -383,10 +383,10 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
                         return
                     sh = gc.open_by_url(faculty.google_sheet_url)
                     try:
-                        ws = sh.worksheet("Записи")
+                        ws = sh.worksheet("Записи_2")
                     except Exception as e:
-                        logging.warning(f"[GSHEET] Не найден лист 'Записи', создаём: {e}")
-                        ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
+                        logging.warning(f"[GSHEET] Не найден лист 'Записи_2', создаём: {e}")
+                        ws = sh.add_worksheet(title="Записи_2", rows="100", cols="10")
                     # Получаем всех собесеров факультета
                     result_all_sobesers = await session2.execute(
                         select(User).where(User.is_sobeser == True, User.faculty_id == faculty_id)
@@ -449,7 +449,7 @@ async def register_interview_confirm(callback: CallbackQuery, state: FSMContext)
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
-                logging.error(f"[GSHEET] Ошибка при добавлении записи: {e}\n{tb}")
+                logging.error(f"[GSHEET] Ошибка при добавлении Записи_2: {e}\n{tb}")
         # Запускаем задачу в фоне
         asyncio.create_task(add_to_google_sheet(user.id, user.first_name, user.last_name, faculty_id, date, time_slot))
         # Уведомляем админа факультета с указанием собеседующих
@@ -516,7 +516,7 @@ async def register_interview_back_to_dates(callback: CallbackQuery, state: FSMCo
                     [InlineKeyboardButton(text="Назад", callback_data="reg_back_to_menu")]
                 ]
             )
-            await callback.message.answer("Нет доступных дат для записи.", reply_markup=kb)
+            await callback.message.answer("Нет доступных дат для Записи_2.", reply_markup=kb)
             await state.set_state(InterviewFSM.choosing_date)
             return
         kb = InlineKeyboardMarkup(
@@ -583,7 +583,7 @@ async def register_interview_back_to_times(callback: CallbackQuery, state: FSMCo
 
 
 
-# --- Отмена записи: проверка времени и система причин ---
+# --- Отмена Записи_2: проверка времени и система причин ---
 @dp.callback_query(F.data == "cancel_interview")
 async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
     tg_id = str(callback.from_user.id)
@@ -599,7 +599,7 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
             )
         )
         if not reg:
-            await callback.message.edit_text("У вас нет активной записи.")
+            await callback.message.edit_text("У вас нет активной Записи_2.")
             return
         
         # Проверяем время до собеседования
@@ -633,7 +633,7 @@ async def cancel_interview_callback(callback: CallbackQuery, state: FSMContext):
             
             # Если можно отменить, запрашиваем причину
             await callback.message.edit_text(
-                f"📝 <b>Укажите причину отмены записи:</b>\n\n"
+                f"📝 <b>Укажите причину отмены Записи_2:</b>\n\n"
                 f"<b>Дата:</b> {reg.date}\n"
                 f"<b>Время:</b> {reg.time_slot}\n\n"
                 f"Напишите причину отмены в следующем сообщении:",
@@ -688,7 +688,7 @@ async def cancel_reason_handler(message: types.Message, state: FSMContext):
         ])
         
         admin_message = (
-            f"📋 <b>Запрос на отмену записи</b>\n\n"
+            f"📋 <b>Запрос на отмену Записи_2</b>\n\n"
             f"<b>Кандидат:</b> {message.from_user.first_name} {message.from_user.last_name}\n"
             f"<b>Дата:</b> {reg.date}\n"
             f"<b>Время:</b> {reg.time_slot}\n"
@@ -760,7 +760,7 @@ async def admin_approve_cancel(callback: CallbackQuery):
         # Уведомляем админа
         await callback.message.edit_text(
             f"✅ <b>Отмена разрешена!</b>\n\n"
-            f"Кандидат {user.first_name} {user.last_name} уведомлен об отмене записи.",
+            f"Кандидат {user.first_name} {user.last_name} уведомлен об отмене Записи_2.",
             parse_mode="HTML"
         )
 
@@ -787,7 +787,7 @@ async def admin_reject_cancel(callback: CallbackQuery):
         try:
             await bot.send_message(
                 user.tg_id,
-                f"❌ <b>Отмена записи отклонена</b>\n\n"
+                f"❌ <b>Отмена Записи_2 отклонена</b>\n\n"
                 f"<b>Дата:</b> {reg.date}\n"
                 f"<b>Время:</b> {reg.time_slot}\n\n"
                 f"Ваша запись остается активной.",
@@ -1453,7 +1453,7 @@ async def slot_count_callback(callback: CallbackQuery):
         await callback.message.edit_text(f"Лимит слотов на {date} {time_slot} установлен: {count}", reply_markup=kb)
 
 
-# --- Команда для админа: получить все записи кандидатов по дням ---
+# --- Команда для админа: получить все Записи_2 кандидатов по дням ---
 @dp.message(Command("get_zapis"))
 async def get_zapis(message: types.Message):
     tg_id = str(message.from_user.id)
@@ -1465,7 +1465,7 @@ async def get_zapis(message: types.Message):
             await message.answer("Вы не являетесь админом факультета или не привязаны к факультету.")
             return
         admin, faculty = row
-        # Получаем все записи по факультету
+        # Получаем все Записи_2 по факультету
         result_regs = await session.execute(
             select(InterviewRegistration, User)
             .join(User, User.id == InterviewRegistration.user_id)
@@ -1522,7 +1522,7 @@ async def get_fucking_stats(message: types.Message):
             }
             
             # Исключаемые листы
-            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи_2"}
             
             for faculty in faculties:
                 if not faculty.google_sheet_url:
@@ -1675,7 +1675,7 @@ async def recover_missing_data(message: types.Message):
             errors = []
             
             # Исключаемые листы
-            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            excluded_sheets = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи_2"}
             
             for faculty in faculties:
                 if not faculty.google_sheet_url:
@@ -1914,7 +1914,7 @@ async def debug_availability(message: types.Message):
 @dp.message(Command("updatee_zapis"))
 async def updatee_zapis(message: Message):
     tg_id = str(message.from_user.id)
-    await message.answer("Обновляю лист 'Записи' по всем текущим данным...")
+    await message.answer("Обновляю лист 'Записи_2' по всем текущим данным...")
     try:
         async for session in get_session():
             # Проверяем, что пользователь — админ факультета
@@ -1935,16 +1935,16 @@ async def updatee_zapis(message: Message):
             gc = gspread.service_account(filename="credentials.json")
             sh = gc.open_by_url(faculty.google_sheet_url)
 
-            # Удаляем старый лист "Записи", если есть
+            # Удаляем старый лист "Записи_2", если есть
             try:
-                ws = sh.worksheet("Записи")
+                ws = sh.worksheet("Записи_2")
                 sh.del_worksheet(ws)
                 await asyncio.sleep(3)
             except Exception:
                 pass
 
-            # Создаём новый лист "Записи"
-            ws = sh.add_worksheet(title="Записи", rows="100", cols="10")
+            # Создаём новый лист "Записи_2"
+            ws = sh.add_worksheet(title="Записи_2", rows="100", cols="10")
             await asyncio.sleep(3)
 
             # Заголовки
@@ -1952,7 +1952,7 @@ async def updatee_zapis(message: Message):
             ws.append_row(headers)
             await asyncio.sleep(2)
 
-            # Получаем все записи на собеседования по факультету
+            # Получаем все Записи_2 на собеседования по факультету
             result_regs = await session.execute(
                 select(InterviewRegistration, User)
                 .join(User, User.id == InterviewRegistration.user_id)
@@ -2009,7 +2009,7 @@ async def updatee_zapis(message: Message):
                     set_data_validation_for_cell_range(ws, f"G{idx}:H{idx}", rule_all)
                     await asyncio.sleep(2)
 
-            await message.answer(f"Лист 'Записи' успешно обновлён! Всего записей: {len(rows)}")
+            await message.answer(f"Лист 'Записи_2' успешно обновлён! Всего записей: {len(rows)}")
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
@@ -2039,7 +2039,7 @@ async def recover_missing_slots(message: Message):
             import gspread
             gc = gspread.service_account(filename="credentials.json")
             sh = gc.open_by_url(faculty.google_sheet_url)
-            exclude = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи"}
+            exclude = {"Кандидаты", "Опытные собесеры", "Не опытные собесеры", "Записи_2"}
             sheets = [ws for ws in sh.worksheets() if ws.title not in exclude]
 
             total_pages = len(sheets)

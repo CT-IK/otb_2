@@ -19,7 +19,7 @@ def seed_sample_data():
         Session = sessionmaker(bind=engine)
         session = Session()
         
-        from models import Faculty, User, Candidate, FacultyTimeDelta
+        from db.models import Faculty, User, Candidate, FacultyTimeDelta
         
         print("📊 Добавляем тестовые данные...")
         
